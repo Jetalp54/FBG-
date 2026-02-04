@@ -376,6 +376,38 @@ else
     sudo -u $SERVICE_USER npm install react react-dom react-router-dom @types/react @types/react-dom typescript vite @vitejs/plugin-react
 fi
 
+# Patch Frontend API Client to use /api prefix
+print_info "Patching frontend API client..."
+cat > $APP_DIR/patch_frontend.py << 'EOF'
+import os
+
+file_path = "src/utils/apiClient.ts"
+try:
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        # Patch the baseURL logic for remote server
+        old_logic = "this.baseURL = `http://${serverIP}`;"
+        new_logic = "this.baseURL = `http://${serverIP}/api`;"
+        
+        if old_logic in content:
+            content = content.replace(old_logic, new_logic)
+            print("Patched frontend API client.")
+            
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        else:
+            print("Frontend API client logic not found or already patched.")
+    else:
+        print(f"File not found: {file_path}")
+except Exception as e:
+    print(f"Error patching frontend: {e}")
+EOF
+
+sudo -u $SERVICE_USER $APP_DIR/venv/bin/python $APP_DIR/patch_frontend.py
+rm -f $APP_DIR/patch_frontend.py
+
 # Build frontend
 print_info "Building frontend..."
 if sudo -u $SERVICE_USER npm run build; then
