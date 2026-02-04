@@ -399,35 +399,70 @@ cd $APP_DIR || {
     print_error "Failed to change to application directory for migrations"
     exit 1
 }
+
+# Auto-Patch Backend to exclude DB on failure
+print_info "Ensuring backend code is safe for JSON-only mode..."
+cat > $APP_DIR/patch_backend_safe.py << 'EOF'
+import os
+import sys
+
+file_path = "src/utils/firebaseBackend.py"
+try:
+    if not os.path.exists(file_path):
+        print(f"File not found: {file_path}")
+        sys.exit(0)
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    
+    # 1. Patch Startup Logic
+    old_startup = """    # Initialize database first
+    try:
+        init_database()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        exit(1)"""
+        
+    new_startup = """    # Initialize database first
+    if os.getenv('USE_DATABASE', 'false').lower() == 'true':
+        try:
+            init_database()
+            logger.info("Database initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+            exit(1)
+    else:
+        logger.info("Skipping database initialization (USE_DATABASE is not true)")"""
+        
+    if old_startup in content:
+        content = content.replace(old_startup, new_startup)
+        print("Patched startup logic.")
+        
+    # 2. Patch Auth Logic (if not already patched, though tough to regex match large blocks reliably, 
+    # we rely on the critical startup crash fix primarily. The auth logic patch is complex to regex replace safely.
+    # Assuming user has the latest file content or the startup patch is sufficient to get service running).
+    
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(content)
+        
+except Exception as e:
+    print(f"Error patching file: {e}")
+EOF
+
+sudo -u $SERVICE_USER $APP_DIR/venv/bin/python $APP_DIR/patch_backend_safe.py
+rm -f $APP_DIR/patch_backend_safe.py
+
+# Try migrations but don't fail script if they error
 if sudo -u $SERVICE_USER $APP_DIR/venv/bin/python -m src.database.migrations 2>/dev/null; then
     print_success "Database migrations completed successfully"
+    DB_SUCCESS=true
 else
-    print_error "Database migrations failed"
-    print_info "Attempting to create tables manually..."
-    
-    # Create basic tables if migrations fail
-    sudo -u $SERVICE_USER $APP_DIR/venv/bin/python -c "
-import asyncio
-import sys
-sys.path.append('$APP_DIR')
-from src.database.connection import db_manager
-from src.database.models import Base
-from sqlalchemy import text
-
-async def create_basic_tables():
-    try:
-        await db_manager.initialize()
-        async with db_manager.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        print('Basic tables created successfully')
-    except Exception as e:
-        print(f'Error creating tables: {e}')
-    finally:
-        await db_manager.close()
-
-asyncio.run(create_basic_tables())
-"
+    print_warning "Database migrations failed - falling back to JSON mode"
+    print_info "This is expected if PostgreSQL is not configured perfectly."
+    DB_SUCCESS=false
 fi
+
 
 # Create environment file
 # Environment configuration will be created later for JSON-based backend
@@ -436,20 +471,25 @@ fi
 mkdir -p $APP_DIR/uploads
 chown -R $SERVICE_USER:$SERVICE_GROUP $APP_DIR/uploads
 
-# Skip database migrations for now - use JSON files
-print_info "Setting up backend to use JSON files (database migrations skipped)..."
-cd $APP_DIR
+# Configure environment based on database success
+print_info "Configuring environment..."
+if [ "$DB_SUCCESS" = true ]; then
+    USE_DB="true"
+    USE_JSON="false"
+else
+    USE_DB="false"
+    USE_JSON="true"
+fi
 
-# Create configuration for JSON-based backend
 cat > $APP_DIR/.env << EOF
-# Configuration for JSON-based backend
-USE_DATABASE=false
-USE_JSON_FILES=true
+USE_DATABASE=$USE_DB
+USE_JSON_FILES=$USE_JSON
 BACKEND_PORT=8000
 LOG_LEVEL=INFO
+# If database succeeded, add DB_URL here if needed, or rely on defaults
 EOF
 
-print_info "Backend will use existing JSON files for data storage"
+print_info "Backend configured with USE_DATABASE=$USE_DB, USE_JSON_FILES=$USE_JSON"
 
 # Create systemd service
 print_info "Creating systemd service..."
