@@ -2661,48 +2661,44 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
             )
             authed_session = AuthorizedSession(credentials)
             
-            # First update the email template
+            # Update reset password template
             if template_patch:
+                # 1. Fetch current config to merge template fields (avoiding destructive overwrite)
+                config_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config"
+                config_resp = authed_session.get(config_url)
+                
+                merged_template = template_patch
+                if config_resp.ok:
+                    current_config = config_resp.json()
+                    existing_template = current_config.get('notification', {}).get('sendEmail', {}).get('resetPasswordTemplate', {})
+                    if existing_template:
+                        merged_template = {**existing_template, **template_patch}
+                        logger.info(f"Merged existing template fields for project {project_id}")
+                
+                # 2. Patch with merged template
                 url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=notification.sendEmail.resetPasswordTemplate"
                 payload = {
                     "notification": {
                         "sendEmail": {
-                            "resetPasswordTemplate": template_patch
+                            "resetPasswordTemplate": merged_template
                         }
                     }
                 }
-                logger.info(f"Sending template update to Firebase API for project {project_id}")
+                logger.info(f"Sending merged template update to Firebase API for project {project_id}")
                 response = authed_session.patch(url, json=payload)
                 if not response.ok:
                     error_text = response.text
                     logger.error(f"Firebase API error for project {project_id}: {response.status_code} - {error_text}")
                     return {"project_id": project_id, "success": False, "error": f"Firebase API error: {response.status_code} - {error_text}"}
                 response.raise_for_status()
-                logger.info(f"Reset template updated for project {project_id} by {user or 'unknown'} at {datetime.now().isoformat()}")
+                logger.info(f"Reset template updated for project {project_id} by {user or 'unknown'}")
             
-            # Update domain configuration if provided
+            # Update domain configuration if provided (using our non-destructive helper)
             if authDomain and authDomain.strip():
-                # Update local storage
-                project['authDomain'] = authDomain.strip()
-                
-                # Update Firebase Auth domain configuration
-                domain_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=signIn.allowDuplicateEmails,signIn.email,authorizedDomains"
-                domain_payload = {
-                    "authorizedDomains": [authDomain.strip(), f"{project_id}.firebaseapp.com"],
-                    "signIn": {
-                        "email": {
-                            "enabled": True,
-                            "passwordRequired": True
-                        },
-                        "allowDuplicateEmails": False
-                    }
-                }
-                try:
-                    domain_response = authed_session.patch(domain_url, json=domain_payload)
-                    domain_response.raise_for_status()
-                    logger.info(f"Updated Firebase Auth domain configuration for project {project_id} to include {authDomain.strip()}")
-                except Exception as domain_error:
-                    logger.warning(f"Failed to update Firebase Auth domain config for {project_id}: {domain_error}")
+                logger.info(f"Adding auth domain {authDomain.strip()} to project {project_id}")
+                domain_results = await update_firebase_projects_domain(authDomain.strip(), [project_id])
+                if not domain_results.get(project_id, {}).get('success'):
+                    logger.warning(f"Domain addition result for {project_id}: {domain_results.get(project_id)}")
                 
                 # Also try to update the email sender domain via Identity Platform
                 try:
@@ -3839,8 +3835,8 @@ async def update_firebase_projects_domain(domain: str, project_ids: List[str]) -
             
             authed_session = AuthorizedSession(credentials_obj)
             
-            # Fetch current authorized domains
-            config_url = f"https://identitytoolkit.googleapis.com/admin/v2/projects/{project_id}/config"
+            # Fetch current authorized domains - CORRECT V2 URL (removed /admin)
+            config_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config"
             response = authed_session.get(config_url)
             
             if response.status_code != 200:
