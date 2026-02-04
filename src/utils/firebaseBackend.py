@@ -445,48 +445,73 @@ def auth_login(body: Dict[str, str] = Body(...)):
         raise HTTPException(status_code=401, detail="Username and password required")
     
     try:
-        # Use database only for authentication
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT u.username, u.password_hash, u.role, u.id 
-            FROM app_users u 
-            WHERE u.username = %s AND u.is_active = TRUE
-        """, (username,))
-        
-        user_data = cursor.fetchone()
-        
-        if not user_data:
+        # Check if using database
+        if os.getenv('USE_DATABASE', 'false').lower() == 'true':
+            # Use database for authentication
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT u.username, u.password_hash, u.role, u.id 
+                FROM app_users u 
+                WHERE u.username = %s AND u.is_active = TRUE
+            """, (username,))
+            
+            user_data = cursor.fetchone()
+            
+            if not user_data:
+                cursor.close()
+                conn.close()
+                raise HTTPException(status_code=401, detail="Invalid credentials")
+            
+            # Check password (plain text as per existing DB logic)
+            if user_data['password_hash'] != password:
+                cursor.close()
+                conn.close()
+                raise HTTPException(status_code=401, detail="Invalid credentials")
+            
+            # Get permissions from database
+            cursor.execute("""
+                SELECT permission_name 
+                FROM user_permissions 
+                WHERE user_id = %s AND is_granted = TRUE
+            """, (user_data['id'],))
+            
+            permissions = [row['permission_name'] for row in cursor.fetchall()]
+            
             cursor.close()
             conn.close()
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        
-        # Check password (plain text - no hashing)
-        if user_data['password_hash'] != password:
-            cursor.close()
-            conn.close()
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        
-        # Get permissions from database
-        cursor.execute("""
-            SELECT permission_name 
-            FROM user_permissions 
-            WHERE user_id = %s AND is_granted = TRUE
-        """, (user_data['id'],))
-        
-        permissions = [row['permission_name'] for row in cursor.fetchall()]
-        
-        cursor.close()
-        conn.close()
-        
-        logger.info(f"User {username} authenticated successfully with {len(permissions)} permissions")
-        return {
-            "success": True, 
-            "username": username, 
-            "role": user_data['role'], 
-            "permissions": permissions
-        }
+            
+            logger.info(f"User {username} authenticated successfully with {len(permissions)} permissions (DB)")
+            return {
+                "success": True, 
+                "username": username, 
+                "role": user_data['role'], 
+                "permissions": permissions
+            }
+        else:
+            # File-based authentication
+            data = load_app_users()
+            user = next((u for u in data.get('users', []) if u.get('username') == username), None)
+            
+            if not user:
+                raise HTTPException(status_code=401, detail="Invalid credentials")
+            
+            # Check password (hashed for file-based)
+            if user.get('password_hash') != _hash_password(password):
+                raise HTTPException(status_code=401, detail="Invalid credentials")
+            
+            # Compute permissions
+            permissions_dict = compute_effective_permissions(username)
+            permissions = [k for k, v in permissions_dict.items() if v]
+            
+            logger.info(f"User {username} authenticated successfully (File)")
+            return {
+                "success": True, 
+                "username": username, 
+                "role": user.get('role', 'user'), 
+                "permissions": permissions
+            }
         
     except HTTPException:
         raise
@@ -3799,12 +3824,15 @@ if __name__ == "__main__":
     import os
     
     # Initialize database first
-    try:
-        init_database()
-        logger.info("Database initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
-        exit(1)
+    if os.getenv('USE_DATABASE', 'false').lower() == 'true':
+        try:
+            init_database()
+            logger.info("Database initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+            exit(1)
+    else:
+        logger.info("Skipping database initialization (USE_DATABASE is not true)")
     
     # Load initial data (only if not using database)
     if os.getenv('USE_DATABASE') != 'true':
