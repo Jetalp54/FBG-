@@ -11,12 +11,12 @@ import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import JSON5 from 'json5'; // Add at the top for robust JSON parsing
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:8000" : "/api";
 
 export const TemplatesPage = () => {
   const { projects, profiles, activeProfile, addProject, reloadProjectsAndProfiles } = useEnhancedApp();
   const { toast } = useToast();
-  
+
   // Reset Email Template State
   const [resetSenderName, setResetSenderName] = useState('');
   const [resetFromAddress, setResetFromAddress] = useState('');
@@ -27,7 +27,7 @@ export const TemplatesPage = () => {
   const [resetLoading, setResetLoading] = useState(false);
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const [projectSearchTerm, setProjectSearchTerm] = useState('');
-  
+
   // Domain Management State
   const [newAuthDomain, setNewAuthDomain] = useState('');
   const [domainLoading, setDomainLoading] = useState(false);
@@ -40,11 +40,11 @@ export const TemplatesPage = () => {
   const [bulkImportStatus, setBulkImportStatus] = useState<string>('');
   const [bulkImportLoading, setBulkImportLoading] = useState(false);
   const [bulkImportLog, setBulkImportLog] = useState<string[]>([]);
-  
+
 
 
   // Filter projects by active profile
-  const activeProjects = projects.filter(p => 
+  const activeProjects = projects.filter(p =>
     (!activeProfile || p.profileId === activeProfile) && p.status === 'active'
   );
 
@@ -54,7 +54,7 @@ export const TemplatesPage = () => {
   );
 
   const handleProjectToggle = (projectId: string) => {
-    setSelectedProjects(prev => 
+    setSelectedProjects(prev =>
       prev.includes(projectId)
         ? prev.filter(id => id !== projectId)
         : [...prev, projectId]
@@ -78,7 +78,7 @@ export const TemplatesPage = () => {
   };
 
   const handleDomainProjectToggle = (projectId: string) => {
-    setSelectedDomainProjects(prev => 
+    setSelectedDomainProjects(prev =>
       prev.includes(projectId)
         ? prev.filter(id => id !== projectId)
         : [...prev, projectId]
@@ -92,9 +92,9 @@ export const TemplatesPage = () => {
 
   const loadProjectDomains = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/project-domains`);
+      const response = await fetch(`${API_BASE_URL}/project-domains`);
       const data = await response.json();
-      
+
       if (data.success) {
         setProjectDomains(data.domains);
       }
@@ -105,10 +105,10 @@ export const TemplatesPage = () => {
 
   const handleResetTemplateSave = async () => {
     if (selectedProjects.length === 0) {
-      toast({ 
-        title: 'Select projects', 
-        description: 'Please select at least one project to update.', 
-        variant: 'destructive' 
+      toast({
+        title: 'Select projects',
+        description: 'Please select at least one project to update.',
+        variant: 'destructive'
       });
       return;
     }
@@ -132,25 +132,25 @@ export const TemplatesPage = () => {
       console.log('TemplatesPage: Payload size:', JSON.stringify(payload).length, 'characters');
       console.log('TemplatesPage: Body length:', resetBody.length, 'characters');
       console.log('TemplatesPage: API_BASE_URL:', API_BASE_URL);
-      
+
       // Use bulk endpoint for better performance
-      const response = await fetch(`${API_BASE_URL}/api/update-reset-template-bulk`, {
+      const response = await fetch(`${API_BASE_URL}/update-reset-template-bulk`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      
+
       console.log('TemplatesPage: Response status:', response.status);
       console.log('TemplatesPage: Response ok:', response.ok);
-      
+
       const data = await response.json();
-      
+
       if (response.ok && data.success) {
-        toast({ 
-          title: 'Success', 
-          description: `Updated ${data.summary.successful} project(s) successfully.` 
+        toast({
+          title: 'Success',
+          description: `Updated ${data.summary.successful} project(s) successfully.`
         });
-        
+
         // Clear form on success
         setResetSenderName('');
         setResetFromAddress('');
@@ -162,11 +162,11 @@ export const TemplatesPage = () => {
       } else {
         // Handle partial success
         if (data.summary && data.summary.successful > 0) {
-          toast({ 
-            title: 'Partial Success', 
-            description: `Updated ${data.summary.successful} project(s) successfully. ${data.summary.failed} failed.` 
+          toast({
+            title: 'Partial Success',
+            description: `Updated ${data.summary.successful} project(s) successfully. ${data.summary.failed} failed.`
           });
-          
+
           // Clear form on partial success too
           setResetSenderName('');
           setResetFromAddress('');
@@ -189,10 +189,10 @@ export const TemplatesPage = () => {
       }
 
     } catch (error) {
-      toast({ 
-        title: 'Error', 
-        description: 'Failed to update templates. Please try again.', 
-        variant: 'destructive' 
+      toast({
+        title: 'Error',
+        description: 'Failed to update templates. Please try again.',
+        variant: 'destructive'
       });
       console.error('Template update error:', error);
     } finally {
@@ -202,19 +202,19 @@ export const TemplatesPage = () => {
 
   const handleDomainUpdate = async () => {
     if (selectedDomainProjects.length === 0) {
-      toast({ 
-        title: 'Select projects', 
-        description: 'Please select at least one project to update.', 
-        variant: 'destructive' 
+      toast({
+        title: 'Select projects',
+        description: 'Please select at least one project to update.',
+        variant: 'destructive'
       });
       return;
     }
 
     if (!newAuthDomain.trim()) {
-      toast({ 
-        title: 'Enter domain', 
-        description: 'Please enter a valid auth domain.', 
-        variant: 'destructive' 
+      toast({
+        title: 'Enter domain',
+        description: 'Please enter a valid auth domain.',
+        variant: 'destructive'
       });
       return;
     }
@@ -222,7 +222,7 @@ export const TemplatesPage = () => {
     setDomainLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/update-project-domain-bulk`, {
+      const response = await fetch(`${API_BASE_URL}/update-project-domain-bulk`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -231,22 +231,22 @@ export const TemplatesPage = () => {
           user: 'admin'
         })
       });
-      
+
       const data = await response.json();
-      
+
       if (response.ok && data.success) {
-        toast({ 
-          title: 'Success', 
-          description: `Updated ${data.summary.successful} project(s) successfully.` 
+        toast({
+          title: 'Success',
+          description: `Updated ${data.summary.successful} project(s) successfully.`
         });
-        
+
         // Reload project domains
         await loadProjectDomains();
-        
+
         // Clear form
         setNewAuthDomain('');
         setSelectedDomainProjects([]);
-        
+
         // Also clear the reset form domain if it was set
         if (resetAuthDomain === newAuthDomain.trim()) {
           setResetAuthDomain('');
@@ -254,9 +254,9 @@ export const TemplatesPage = () => {
       } else {
         // Handle partial success
         if (data.summary && data.summary.successful > 0) {
-          toast({ 
-            title: 'Partial Success', 
-            description: `Updated ${data.summary.successful} project(s) successfully. ${data.summary.failed} failed.` 
+          toast({
+            title: 'Partial Success',
+            description: `Updated ${data.summary.successful} project(s) successfully. ${data.summary.failed} failed.`
           });
           await loadProjectDomains();
         } else {
@@ -273,10 +273,10 @@ export const TemplatesPage = () => {
       }
 
     } catch (error) {
-      toast({ 
-        title: 'Error', 
-        description: 'Failed to update domains. Please try again.', 
-        variant: 'destructive' 
+      toast({
+        title: 'Error',
+        description: 'Failed to update domains. Please try again.',
+        variant: 'destructive'
       });
       console.error('Domain update error:', error);
     } finally {
@@ -439,7 +439,7 @@ export const TemplatesPage = () => {
       <div>
         <h1 className="text-3xl font-bold text-white mb-2">Firebase Template Manager</h1>
         <p className="text-gray-400">
-          Profile: <span className="text-blue-400 font-medium">{activeProfileName}</span> • 
+          Profile: <span className="text-blue-400 font-medium">{activeProfileName}</span> •
           Manage Firebase Identity Platform templates and domains
         </p>
       </div>
@@ -476,17 +476,17 @@ export const TemplatesPage = () => {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center gap-2">
-                <Checkbox 
+                <Checkbox
                   checked={selectedProjects.length === activeProjects.length && activeProjects.length > 0}
                   onCheckedChange={handleSelectAllProjects}
                 />
                 <Label className="text-gray-300">Select All Projects</Label>
               </div>
-              
+
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {filteredProjects.map((project) => (
                   <div key={project.id} className="flex items-center gap-2 p-3 bg-gray-700 rounded-lg">
-                    <Checkbox 
+                    <Checkbox
                       checked={selectedProjects.includes(project.id)}
                       onCheckedChange={() => handleProjectToggle(project.id)}
                     />
@@ -497,7 +497,7 @@ export const TemplatesPage = () => {
                   </div>
                 ))}
               </div>
-              
+
               {activeProjects.length === 0 && (
                 <div className="text-center py-8 text-gray-400">
                   No active projects found in the current profile.
@@ -511,7 +511,7 @@ export const TemplatesPage = () => {
               <CardHeader>
                 <CardTitle className="text-white">Reset Password Email Template</CardTitle>
                 <p className="text-gray-400 text-sm">
-                  Selected {selectedProjects.length} project(s): {selectedProjects.map(id => 
+                  Selected {selectedProjects.length} project(s): {selectedProjects.map(id =>
                     activeProjects.find(p => p.id === id)?.name
                   ).join(', ')}
                 </p>
@@ -520,38 +520,38 @@ export const TemplatesPage = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <Label className="text-gray-300">Sender Name</Label>
-                    <Input 
-                      value={resetSenderName} 
-                      onChange={e => setResetSenderName(e.target.value)} 
+                    <Input
+                      value={resetSenderName}
+                      onChange={e => setResetSenderName(e.target.value)}
                       placeholder="Your Company Name"
-                      className="bg-gray-700 border-gray-600 text-white" 
+                      className="bg-gray-700 border-gray-600 text-white"
                     />
                   </div>
                   <div>
                     <Label className="text-gray-300">From (Local part)</Label>
-                    <Input 
-                      value={resetFromAddress} 
-                      onChange={e => setResetFromAddress(e.target.value)} 
+                    <Input
+                      value={resetFromAddress}
+                      onChange={e => setResetFromAddress(e.target.value)}
                       placeholder="noreply"
-                      className="bg-gray-700 border-gray-600 text-white" 
+                      className="bg-gray-700 border-gray-600 text-white"
                     />
                   </div>
                   <div>
                     <Label className="text-gray-300">Reply-To</Label>
-                    <Input 
-                      value={resetReplyTo} 
-                      onChange={e => setResetReplyTo(e.target.value)} 
+                    <Input
+                      value={resetReplyTo}
+                      onChange={e => setResetReplyTo(e.target.value)}
                       placeholder="support@yourcompany.com"
-                      className="bg-gray-700 border-gray-600 text-white" 
+                      className="bg-gray-700 border-gray-600 text-white"
                     />
                   </div>
                   <div>
                     <Label className="text-gray-300">Subject</Label>
-                    <Input 
-                      value={resetSubject} 
-                      onChange={e => setResetSubject(e.target.value)} 
+                    <Input
+                      value={resetSubject}
+                      onChange={e => setResetSubject(e.target.value)}
                       placeholder="Reset Your Password"
-                      className="bg-gray-700 border-gray-600 text-white" 
+                      className="bg-gray-700 border-gray-600 text-white"
                     />
                   </div>
                   <div className="md:col-span-2">
@@ -559,14 +559,14 @@ export const TemplatesPage = () => {
                       <Globe className="w-4 h-4" />
                       Auth Domain (Optional)
                     </Label>
-                    <Input 
-                      value={resetAuthDomain} 
-                      onChange={e => setResetAuthDomain(e.target.value)} 
+                    <Input
+                      value={resetAuthDomain}
+                      onChange={e => setResetAuthDomain(e.target.value)}
                       placeholder="auth.yourdomain.com"
-                      className="bg-gray-700 border-gray-600 text-white" 
+                      className="bg-gray-700 border-gray-600 text-white"
                     />
                     <p className="text-xs text-gray-500 mt-1">
-                      Enter a custom authentication domain for selected projects (e.g., auth.yourdomain.com). 
+                      Enter a custom authentication domain for selected projects (e.g., auth.yourdomain.com).
                       <br />
                       <strong>Note:</strong> This sets the auth domain for login redirects. For custom email domains, you need to configure SMTP in Firebase Console.
                     </p>
@@ -574,16 +574,16 @@ export const TemplatesPage = () => {
                 </div>
                 <div>
                   <Label className="text-gray-300">HTML Body</Label>
-                  <Textarea 
-                    value={resetBody} 
-                    onChange={e => setResetBody(e.target.value)} 
+                  <Textarea
+                    value={resetBody}
+                    onChange={e => setResetBody(e.target.value)}
                     placeholder="<h1>Reset Your Password</h1><p>Click the link below to reset your password:</p><a href='{{reset_link}}'>Reset Password</a>"
-                    className="min-h-[200px] bg-gray-700 border-gray-600 text-white font-mono text-sm" 
+                    className="min-h-[200px] bg-gray-700 border-gray-600 text-white font-mono text-sm"
                   />
                 </div>
-                <Button 
-                  onClick={handleResetTemplateSave} 
-                  disabled={resetLoading} 
+                <Button
+                  onClick={handleResetTemplateSave}
+                  disabled={resetLoading}
                   className="bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800"
                 >
                   {resetLoading ? 'Updating Templates...' : `Update ${selectedProjects.length} Project(s)`}
@@ -679,17 +679,17 @@ export const TemplatesPage = () => {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center gap-2">
-                <Checkbox 
+                <Checkbox
                   checked={selectedDomainProjects.length === activeProjects.length && activeProjects.length > 0}
                   onCheckedChange={handleSelectAllDomainProjects}
                 />
                 <Label className="text-gray-300">Select All Projects</Label>
               </div>
-              
+
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {activeProjects.map((project) => (
                   <div key={project.id} className="flex items-center gap-2 p-3 bg-gray-700 rounded-lg">
-                    <Checkbox 
+                    <Checkbox
                       checked={selectedDomainProjects.includes(project.id)}
                       onCheckedChange={() => handleDomainProjectToggle(project.id)}
                     />
@@ -700,24 +700,24 @@ export const TemplatesPage = () => {
                   </div>
                 ))}
               </div>
-              
+
               {selectedDomainProjects.length > 0 && (
                 <div className="space-y-4">
                   <div>
                     <Label className="text-gray-300">New Auth Domain</Label>
-                    <Input 
-                      value={newAuthDomain} 
-                      onChange={e => setNewAuthDomain(e.target.value)} 
+                    <Input
+                      value={newAuthDomain}
+                      onChange={e => setNewAuthDomain(e.target.value)}
                       placeholder="auth.yourdomain.com"
-                      className="bg-gray-700 border-gray-600 text-white" 
+                      className="bg-gray-700 border-gray-600 text-white"
                     />
                     <p className="text-xs text-gray-500 mt-1">
                       Enter the domain where users will be redirected for authentication (e.g., auth.yourdomain.com)
                     </p>
                   </div>
-                  <Button 
-                    onClick={handleDomainUpdate} 
-                    disabled={domainLoading} 
+                  <Button
+                    onClick={handleDomainUpdate}
+                    disabled={domainLoading}
                     className="bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800"
                   >
                     {domainLoading ? 'Updating Domains...' : `Update ${selectedDomainProjects.length} Project(s)`}

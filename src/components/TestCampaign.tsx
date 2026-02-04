@@ -18,13 +18,13 @@ export const TestCampaign = () => {
   const [isTesting, setIsTesting] = useState(false);
 
   // Filter projects by active profile
-  const activeProjects = projects.filter(p => 
+  const activeProjects = projects.filter(p =>
     (!activeProfile || p.profileId === activeProfile) && p.status === 'active'
   );
 
   const activeProfileName = profiles.find(p => p.id === activeProfile)?.name || 'All Projects';
 
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+  const API_BASE_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:8000" : "/api";
 
   const handleProjectToggle = (projectId: string) => {
     setSelectedProjects(prev =>
@@ -45,7 +45,7 @@ export const TestCampaign = () => {
     console.log('TestCampaign: API_BASE_URL =', API_BASE_URL);
     console.log('TestCampaign: testEmail =', testEmail);
     console.log('TestCampaign: selectedProjects =', selectedProjects);
-    
+
     if (!testEmail.trim()) {
       toast({
         title: "Email Required",
@@ -77,7 +77,7 @@ export const TestCampaign = () => {
       await Promise.all(selectedProjects.map(async (projectId) => {
         try {
           await fetch(`${API_BASE_URL}/projects/${projectId}/reconnect`, { method: 'POST' });
-        } catch {}
+        } catch { }
       }));
       let allSuccess = true;
       for (const projectId of selectedProjects) {
@@ -87,7 +87,7 @@ export const TestCampaign = () => {
           project_id: projectId,
         };
         console.log('TestCampaign: Request body:', requestBody);
-        
+
         const response = await fetch(`${API_BASE_URL}/test-reset-email`, {
           method: 'POST',
           headers: {
@@ -95,10 +95,10 @@ export const TestCampaign = () => {
           },
           body: JSON.stringify(requestBody),
         });
-        
+
         console.log('TestCampaign: Response status:', response.status);
         console.log('TestCampaign: Response ok:', response.ok);
-        
+
         if (!response.ok) {
           allSuccess = false;
           const result = await response.json();
@@ -137,7 +137,7 @@ export const TestCampaign = () => {
       <div>
         <h1 className="text-3xl font-bold text-white mb-2">Test Campaign</h1>
         <p className="text-gray-400">
-          Profile: <span className="text-blue-400 font-medium">{activeProfileName}</span> • 
+          Profile: <span className="text-blue-400 font-medium">{activeProfileName}</span> •
           Test password reset functionality with a single email
         </p>
       </div>

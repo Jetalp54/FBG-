@@ -103,11 +103,11 @@ const getApiBaseUrl = () => {
   
   // If localhost or 127.0.0.1, use localhost
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
-    return 'http://localhost:8000';
+    return "/api";
   }
   
   // Otherwise, use the current hostname with port 8000
-  return `http://${hostname}:8000`;
+  return "/api";
 };
 
 const API_BASE_URL = getApiBaseUrl();
