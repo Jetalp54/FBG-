@@ -1,0 +1,55 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Deploy to server
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SERVER_SSH_KEY }}
+        port: ${{ secrets.SERVER_PORT }}
+        script: |
+          # Navigate to application directory
+          cd /var/www/firebase-app
+          
+          # Pull latest changes
+          git pull origin main
+          
+          # Install dependencies and build
+          npm ci --production=false
+          npm run build
+          
+          # Install Python dependencies (if using virtual environment)
+          if [ -f "/opt/firebase-app-venv/bin/activate" ]; then
+            source /opt/firebase-app-venv/bin/activate
+            pip install -r requirements.txt
+          else
+            pip3 install -r requirements.txt
+          fi
+          
+          # Restart services
+          systemctl restart firebase-backend
+          systemctl reload nginx
+          
+          # Health check
+          sleep 5
+          if curl -s http://localhost:8000/health > /dev/null; then
+            echo "✅ Deployment successful - Backend is healthy"
+          else
+            echo "❌ Deployment failed - Backend health check failed"
+            exit 1
+          fi
+          
+          echo "🚀 Deployment completed successfully!" 

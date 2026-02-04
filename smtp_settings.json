@@ -1,0 +1,9 @@
+{
+  "host": "smtp.gmail.com",
+  "port": 587,
+  "username": "salssapp@gmail.com",
+  "password": "ydijypdtqrpvdjjp",
+  "from": "salssapp@gmail.com",
+  "use_tls": true,
+  "security_mode": "START_TLS"
+}

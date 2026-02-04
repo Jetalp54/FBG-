@@ -1,0 +1,15 @@
+# Simple Requirements for Firebase Manager Backend
+# Only includes packages that are actually used and working
+
+fastapi
+uvicorn[standard]
+firebase-admin
+pyrebase4
+python-dotenv
+google-auth
+requests
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+aiofiles
+httpx

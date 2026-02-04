@@ -1,0 +1,44 @@
+# Professional Requirements for Firebase Manager with PostgreSQL
+# Designed to handle 1000+ campaigns with enterprise-grade performance
+
+# Core FastAPI Framework
+fastapi
+uvicorn[standard]
+
+# Firebase Integration
+firebase-admin
+pyrebase4
+
+# Environment and Configuration
+python-dotenv
+
+# Google Services
+google-auth
+requests
+
+# API and Data Handling
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+aiofiles
+httpx
+
+# PostgreSQL Database Support
+psycopg2-binary
+sqlalchemy[asyncio]
+asyncpg
+
+# Performance and Caching
+redis
+aioredis
+
+# Monitoring and Logging
+structlog
+prometheus-client
+
+# Production Server
+gunicorn
+
+# Security and Rate Limiting
+slowapi
+healthcheck

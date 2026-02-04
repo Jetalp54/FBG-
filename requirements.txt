@@ -1,0 +1,40 @@
+# COMPLETE Firebase Manager Requirements
+setuptools
+wheel
+
+# Core FastAPI
+fastapi
+uvicorn[standard]
+pydantic
+
+# Firebase & Google
+firebase-admin
+pyrebase4
+google-auth
+google-api-python-client
+google-cloud-resource-manager
+
+# Environment & Configuration
+python-dotenv
+
+# HTTP & Requests
+requests
+httpx
+aiofiles
+
+# Security & Authentication
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+
+# Database
+asyncpg
+psycopg2-binary
+sqlalchemy[asyncio]
+alembic
+
+# Production Server
+gunicorn
+
+# Additional Python utilities
+# (concurrent.futures is built into Python 3) 

@@ -1,0 +1,37 @@
+{
+  "users": [
+    {
+      "username": "admin",
+      "password_hash": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+      "role": "admin",
+      "overrides": {},
+      "email": "admin@firebase-manager.com"
+    },
+    {
+      "username": "rim",
+      "password_hash": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+      "role": "user",
+      "overrides": {
+        "projects": true,
+        "users": true,
+        "campaigns": true,
+        "profiles": true
+      },
+      "email": "rim@example.com",
+      "reset_token": "4im8VbH6ONTNhszBWQrQA3APLSPDEwC5oX2Ur3i0M2s",
+      "reset_token_expiry": "2025-08-12T18:59:03.863765"
+    },
+    {
+      "username": "larry",
+      "password_hash": "b1e9f7001624854f395302de97ea39627bee72f2b45e4563d52c8d0b66503689",
+      "role": "user",
+      "overrides": {
+        "projects": true,
+        "users": true,
+        "campaigns": true,
+        "profiles": true
+      },
+      "email": "maryoumaima8@gmail.com"
+    }
+  ]
+}

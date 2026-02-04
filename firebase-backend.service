@@ -1,0 +1,18 @@
+[Unit]
+Description=Firebase Email Campaign Backend
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/path/to/your/app
+Environment=PATH=/usr/bin:/usr/local/bin
+Environment=PYTHONPATH=/path/to/your/app
+ExecStart=/usr/bin/python3 src/utils/firebaseBackend.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target 

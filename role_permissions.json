@@ -1,0 +1,38 @@
+{
+  "admin": {
+    "projects": true,
+    "users": true,
+    "campaigns": true,
+    "templates": true,
+    "ai": true,
+    "test": true,
+    "profiles": true,
+    "auditLogs": true,
+    "settings": true,
+    "smtp": true
+  },
+  "it": {
+    "projects": false,
+    "users": false,
+    "campaigns": false,
+    "templates": false,
+    "ai": false,
+    "test": false,
+    "profiles": false,
+    "auditLogs": false,
+    "settings": false,
+    "smtp": false
+  },
+  "user": {
+    "projects": false,
+    "users": false,
+    "campaigns": false,
+    "templates": false,
+    "ai": false,
+    "test": false,
+    "profiles": false,
+    "auditLogs": false,
+    "settings": false,
+    "smtp": false
+  }
+}
