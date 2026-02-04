@@ -16,6 +16,14 @@ export const CloudflareDomainManager = () => {
     const { projects, profiles, activeProfile } = useEnhancedApp();
     const { toast } = useToast();
 
+    // Authentication
+    const [adminUser] = useState(localStorage.getItem('admin-basic-user') || 'admin');
+    const [adminPass] = useState(localStorage.getItem('admin-basic-pass') || 'admin');
+    const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + btoa(`${adminUser}:${adminPass}`),
+    };
+
     // Form state
     const [domain, setDomain] = useState('');
     const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
@@ -60,7 +68,7 @@ export const CloudflareDomainManager = () => {
 
     const loadVerifiedDomains = async () => {
         try {
-            const response = await fetch(`${API_BASE_URL}/cloudflare/verified-domains`);
+            const response = await fetch(`${API_BASE_URL}/cloudflare/verified-domains`, { headers });
             const data = await response.json();
 
             if (data.success) {
@@ -122,7 +130,7 @@ export const CloudflareDomainManager = () => {
         try {
             const response = await fetch(`${API_BASE_URL}/cloudflare/initiate-verification`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({
                     domain: domain.trim(),
                     project_ids: selectedProjects,
@@ -162,7 +170,7 @@ export const CloudflareDomainManager = () => {
 
     const checkVerificationStatus = async (vid: string) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/cloudflare/verification-status/${vid}`);
+            const response = await fetch(`${API_BASE_URL}/cloudflare/verification-status/${vid}`, { headers });
             const data = await response.json();
 
             setVerificationStatus(data);
@@ -200,6 +208,7 @@ export const CloudflareDomainManager = () => {
         try {
             const response = await fetch(`${API_BASE_URL}/cloudflare/verification/${verificationId}`, {
                 method: 'DELETE',
+                headers,
             });
 
             if (response.ok) {
