@@ -2591,7 +2591,7 @@ class BulkResetTemplateUpdate(BaseModel):
     project_ids: List[str]
     user: Optional[str] = None
 
-@app.post("/api/update-reset-template")
+@app.post("/update-reset-template")
 async def update_reset_template(data: ResetTemplateUpdate, request: Request):
     """Update reset password template for a single project"""
     try:
@@ -2602,7 +2602,7 @@ async def update_reset_template(data: ResetTemplateUpdate, request: Request):
         logger.error(f"Template update failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Template update failed: {str(e)}")
 
-@app.post("/api/update-reset-template-bulk")
+@app.post("/update-reset-template-bulk")
 async def update_reset_template_bulk(data: BulkResetTemplateUpdate, request: Request):
     """Update reset password template for multiple projects in parallel"""
     try:
