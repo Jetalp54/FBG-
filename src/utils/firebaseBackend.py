@@ -3589,14 +3589,32 @@ async def get_project_domains():
 # Cloudflare Configuration Endpoints
 # ===================================================================
 
-CLOUDFLARE_CONFIG_FILE = "cloudflare_config.json"
+# ===================================================================
+# Cloudflare Configuration Endpoints
+# ===================================================================
+
+# Determine absolute path to config file in project root
+try:
+    # src/utils/firebaseBackend.py -> src/utils -> src -> root
+    ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    CLOUDFLARE_CONFIG_FILE = os.path.join(ROOT_DIR, "cloudflare_config.json")
+    logger.info(f"Cloudflare config file path resolved to: {CLOUDFLARE_CONFIG_FILE}")
+except Exception as e:
+    # Fallback to current directory if path resolution fails
+    CLOUDFLARE_CONFIG_FILE = "cloudflare_config.json"
+    logger.error(f"Failed to resolve absolute path, using relative: {e}")
 
 def load_cloudflare_config_from_file():
     """Load Cloudflare config from file"""
     try:
         if os.path.exists(CLOUDFLARE_CONFIG_FILE):
+            logger.info(f"Loading Cloudflare config from: {CLOUDFLARE_CONFIG_FILE}")
             with open(CLOUDFLARE_CONFIG_FILE, 'r') as f:
-                return json.load(f)
+                data = json.load(f)
+                logger.info(f"Loaded config keys: {list(data.keys())}")
+                return data
+        else:
+            logger.warning(f"Cloudflare config file not found at: {CLOUDFLARE_CONFIG_FILE}")
     except Exception as e:
         logger.error(f"Failed to load Cloudflare config file: {e}")
     return {}
@@ -3604,8 +3622,10 @@ def load_cloudflare_config_from_file():
 def save_cloudflare_config_to_file(config):
     """Save Cloudflare config to file"""
     try:
+        logger.info(f"Saving Cloudflare config to: {CLOUDFLARE_CONFIG_FILE}")
         with open(CLOUDFLARE_CONFIG_FILE, 'w') as f:
             json.dump(config, f, indent=2)
+        logger.info("Config saved successfully")
     except Exception as e:
         logger.error(f"Failed to save Cloudflare config file: {e}")
         raise
@@ -3614,24 +3634,33 @@ def save_cloudflare_config_to_file(config):
 _initial_config = load_cloudflare_config_from_file()
 if _initial_config.get('api_token'):
     os.environ['CLOUDFLARE_API_TOKEN'] = _initial_config['api_token']
-    logger.info("Loaded Cloudflare API token from config file")
+    logger.info("Loaded Cloudflare API token from config file on startup")
+else:
+    logger.warning("No Cloudflare API token found in config file on startup")
 
 def get_cf_client():
     """Get Cloudflare client with error handling"""
     try:
         # Load fresh config
         config = load_cloudflare_config_from_file()
-        token = config.get('api_token') or os.getenv('CLOUDFLARE_API_TOKEN')
+        file_token = config.get('api_token')
+        env_token = os.getenv('CLOUDFLARE_API_TOKEN')
+        
+        token = file_token or env_token
+        
+        logger.info(f"get_cf_client check: File Token exists? {bool(file_token)}, Env Token exists? {bool(env_token)}")
         
         if not token:
+            logger.error("Cloudflare token missing in both file and environment")
             raise HTTPException(
                 status_code=500, 
                 detail="Cloudflare not configured. Please set CLOUDFLARE_API_TOKEN in Settings → Cloudflare"
             )
         
         # Ensure env var is up to date
-        if config.get('api_token'):
-            os.environ['CLOUDFLARE_API_TOKEN'] = config['api_token']
+        if file_token and file_token != env_token:
+            os.environ['CLOUDFLARE_API_TOKEN'] = file_token
+            logger.info("Updated process environment variable with token from file")
         
         from utils.cloudflare_client import get_cloudflare_client
         return get_cloudflare_client()
