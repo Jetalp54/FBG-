@@ -3585,13 +3585,6 @@ async def get_project_domains():
 # Cloudflare Configuration Endpoints
 # ===================================================================
 
-# ===================================================================
-# Cloudflare Configuration Endpoints
-# ===================================================================
-
-# ===================================================================
-# Cloudflare Configuration Endpoints
-# ===================================================================
 
 # Determine absolute path to config file in project root
 try:
@@ -4283,15 +4276,6 @@ async def update_project(
 # CLOUDFLARE DOMAIN VERIFICATION ENDPOINTS
 # ============================================================================
 
-# Import Cloudflare client (lazy load to avoid import errors if not configured)
-def get_cf_client():
-    """Get Cloudflare client with error handling"""
-    try:
-        from utils.cloudflare_client import get_cloudflare_client
-        return get_cloudflare_client()
-    except Exception as e:
-        logger.error(f"Failed to initialize Cloudflare client: {e}")
-        raise HTTPException(status_code=500, detail="Cloudflare not configured. Please set CLOUDFLARE_API_TOKEN")
 
 # Store domain verification status (in-memory for now, could move to DB)
 domain_verifications: Dict[str, Dict] = {}
