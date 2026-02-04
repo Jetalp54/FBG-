@@ -3585,14 +3585,43 @@ async def get_project_domains():
 # Cloudflare Configuration Endpoints
 # ===================================================================
 
-# In-memory storage for Cloudflare API token (can be moved to database later)
-cloudflare_config = {}
+# ===================================================================
+# Cloudflare Configuration Endpoints
+# ===================================================================
+
+CLOUDFLARE_CONFIG_FILE = "cloudflare_config.json"
+
+def load_cloudflare_config_from_file():
+    """Load Cloudflare config from file"""
+    try:
+        if os.path.exists(CLOUDFLARE_CONFIG_FILE):
+            with open(CLOUDFLARE_CONFIG_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load Cloudflare config file: {e}")
+    return {}
+
+def save_cloudflare_config_to_file(config):
+    """Save Cloudflare config to file"""
+    try:
+        with open(CLOUDFLARE_CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save Cloudflare config file: {e}")
+        raise
+
+# Initialize environment from file on module load
+_initial_config = load_cloudflare_config_from_file()
+if _initial_config.get('api_token'):
+    os.environ['CLOUDFLARE_API_TOKEN'] = _initial_config['api_token']
+    logger.info("Loaded Cloudflare API token from config file")
 
 def get_cf_client():
     """Get Cloudflare client with error handling"""
     try:
-        # First try to get token from in-memory config
-        token = cloudflare_config.get('api_token') or os.getenv('CLOUDFLARE_API_TOKEN')
+        # Load fresh config
+        config = load_cloudflare_config_from_file()
+        token = config.get('api_token') or os.getenv('CLOUDFLARE_API_TOKEN')
         
         if not token:
             raise HTTPException(
@@ -3600,9 +3629,9 @@ def get_cf_client():
                 detail="Cloudflare not configured. Please set CLOUDFLARE_API_TOKEN in Settings → Cloudflare"
             )
         
-        # Make sure environment variable is set for the client
-        if cloudflare_config.get('api_token'):
-            os.environ['CLOUDFLARE_API_TOKEN'] = cloudflare_config['api_token']
+        # Ensure env var is up to date
+        if config.get('api_token'):
+            os.environ['CLOUDFLARE_API_TOKEN'] = config['api_token']
         
         from utils.cloudflare_client import get_cloudflare_client
         return get_cloudflare_client()
@@ -3619,7 +3648,9 @@ def get_cf_client():
 async def get_cloudflare_config(request: Request):
     """Get Cloudflare configuration (token masked)"""
     try:
-        token = cloudflare_config.get('api_token', '')
+        config = load_cloudflare_config_from_file()
+        token = config.get('api_token') or os.getenv('CLOUDFLARE_API_TOKEN') or ''
+        
         # Mask the token for display
         masked_token = token[:8] + '*' * (len(token) - 8) if len(token) > 8 else ''
         return {
@@ -3641,13 +3672,14 @@ async def save_cloudflare_config(request: Request):
         if not api_token:
             raise HTTPException(status_code=400, detail="API token is required")
         
-        # Store the token
-        cloudflare_config['api_token'] = api_token
+        # Save to file
+        config = {'api_token': api_token}
+        save_cloudflare_config_to_file(config)
         
-        # Update environment variable for cloudflare_client
+        # Update environment variable immediately
         os.environ['CLOUDFLARE_API_TOKEN'] = api_token
         
-        logger.info("Cloudflare API token saved successfully")
+        logger.info("Cloudflare API token saved successfully to file")
         return {
             "success": True,
             "message": "Cloudflare API token saved successfully"
@@ -3662,7 +3694,8 @@ async def save_cloudflare_config(request: Request):
 async def test_cloudflare_connection(request: Request):
     """Test Cloudflare API connection"""
     try:
-        api_token = cloudflare_config.get('api_token') or os.getenv('CLOUDFLARE_API_TOKEN')
+        config = load_cloudflare_config_from_file()
+        api_token = config.get('api_token') or os.getenv('CLOUDFLARE_API_TOKEN')
         
         if not api_token:
             return {
