@@ -584,14 +584,38 @@ cd $APP_DIR || {
     exit 1
 }
 
+# Patch Backend API Routes (Standardise to no /api prefix)
+print_info "Standardising backend API routes..."
+cat > $APP_DIR/patch_backend_api.py << 'EOF'
+import os
+file_path = "src/utils/firebaseBackend.py"
+if os.path.exists(file_path):
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    
+    # Remove /api prefix from route definitions
+    # Nginx strips /api/ already, so backend routes should start without it
+    original = content
+    content = content.replace('@app.post("/api/', '@app.post("/')
+    content = content.replace('@app.get("/api/', '@app.get("/')
+    content = content.replace('@app.put("/api/', '@app.put("/')
+    content = content.replace('@app.delete("/api/', '@app.delete("/')
+    
+    if content != original:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print("Backend routes standardised.")
+EOF
+sudo -u $SERVICE_USER $APP_DIR/venv/bin/python $APP_DIR/patch_backend_api.py
+rm -f $APP_DIR/patch_backend_api.py
+
 # Patch Frontend API configuration GLOBALLY
-print_info "Patching ALL frontend API definitions..."
+print_info "Patching ALL frontend API definitions (Robust)..."
 cat > $APP_DIR/patch_frontend_global.py << 'EOF'
 import os
 import re
 
 # Smart replacement for API_BASE_URL
-# If on localhost, use local port 8000. Otherwise, use relative /api prefix.
 NEW_LOGIC = '(window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:8000" : "/api"'
 
 def patch_frontend_directory(directory):
@@ -607,27 +631,28 @@ def patch_file(file_path):
             
         original_content = content
         
-        # 1. Standard one-liner replacement
-        pattern = r'const API_BASE_URL = import\.meta\.env\.VITE_API_BASE_URL \|\| [\'"]http://localhost:8000[\'"];'
-        replacement = f'const API_BASE_URL = {NEW_LOGIC};'
+        # 1. Standard one-liner replacement (Account for INDENTATION)
+        pattern = r'(\s+const\s+API_BASE_URL\s*=\s*)import\.meta\.env\.VITE_API_BASE_URL \|\| [\'"]http://localhost:8000[\'"];?'
+        replacement = f'\\1{NEW_LOGIC};'
         content = re.sub(pattern, replacement, content)
         
         # 2. Patch getApiBaseUrl functions (common in Contexts)
         if "getApiBaseUrl" in content:
-            # Look for: return `http://${hostname}:8000`; or similar
             content = re.sub(r'return [`\'"]http://\$\{hostname\}:8000[`\'"];', 'return "/api";', content)
             content = re.sub(r'return [\'"]http://localhost:8000[\'"];', 'return "/api";', content)
             
-        # 3. Patch specific fetch calls in LoginPage.tsx if they are hardcoded relative
+        # 3. Remove hardcoded /api from fetch calls that use API_BASE_URL
+        # Example: fetch(`${API_BASE_URL}/api/update...`) -> fetch(`${API_BASE_URL}/update...`)
+        content = content.replace('fetch(`${API_BASE_URL}/api/', 'fetch(`${API_BASE_URL}/')
+
+        # 4. Patch specific fetch calls in LoginPage.tsx
         if "LoginPage.tsx" in file_path:
-            # Ensure it uses /api for auth
             content = content.replace("fetch('/auth/login'", "fetch('/api/auth/login'")
             content = content.replace("fetch('/auth/forgot-password'", "fetch('/api/auth/forgot-password'")
 
-        # 4. Patch apiClient.ts for relative URLs
+        # 5. Patch apiClient.ts
         if "apiClient.ts" in file_path:
              content = content.replace("this.baseURL = `http://${serverIP}`;", f"this.baseURL = {NEW_LOGIC};")
-             # Handle newer apiClient logic
              content = re.sub(r'return [`\'"]http://\$\{hostname\}:8000[`\'"];', 'return "/api";', content)
 
         if content != original_content:
@@ -638,9 +663,8 @@ def patch_file(file_path):
     except Exception as e:
         print(f"Failed to patch {file_path}: {e}")
 
-print("Starting GLOBAL frontend patcher...")
+print("Starting ROBUST frontend patcher...")
 patch_frontend_directory("src")
-print("GLOBAL frontend patcher complete.")
 EOF
 sudo -u $SERVICE_USER $APP_DIR/venv/bin/python $APP_DIR/patch_frontend_global.py
 rm -f $APP_DIR/patch_frontend_global.py
