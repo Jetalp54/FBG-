@@ -3657,7 +3657,7 @@ def get_cf_client():
             os.environ['CLOUDFLARE_API_TOKEN'] = file_token
             logger.info("Updated process environment variable with token from file")
         
-        from utils.cloudflare_client import get_cloudflare_client
+        from cloudflare_client import get_cloudflare_client
         return get_cloudflare_client()
     except HTTPException:
         raise
