@@ -876,6 +876,7 @@ const SmtpSettings = () => {
   );
 };
 
+
 const CloudflareSettings = () => {
   const { toast } = useToast();
   const [adminUser] = useState(localStorage.getItem('admin-basic-user') || 'admin');
@@ -888,6 +889,10 @@ const CloudflareSettings = () => {
   const [apiToken, setApiToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [saved, setSaved] = useState(false);
+  
+  // Debug State
+  const [debugInfo, setDebugInfo] = useState<any>(null);
+  const [showDebug, setShowDebug] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -905,7 +910,16 @@ const CloudflareSettings = () => {
     }
   };
 
+  const loadDebug = async () => {
+    try {
+        const res = await fetch(`${API_BASE_URL}/cloudflare/debug`, { headers });
+        const data = await res.json();
+        setDebugInfo(data.debug_info);
+    } catch(e) { console.error("Debug load failed:", e); }
+  };
+
   useEffect(() => { load(); }, []);
+  useEffect(() => { if (showDebug) loadDebug(); }, [showDebug]);
 
   const save = async () => {
     if (!apiToken.trim()) {
@@ -926,6 +940,7 @@ const CloudflareSettings = () => {
       const data = await res.json();
       setSaved(true);
       toast({ title: 'Saved!', description: data.message || 'Cloudflare API token saved successfully.' });
+      if(showDebug) loadDebug();
     } catch (e: any) {
       toast({ title: 'Save failed', description: e?.message || 'Could not save Cloudflare config.', variant: 'destructive' });
     } finally {
@@ -947,10 +962,11 @@ const CloudflareSettings = () => {
       const data = await res.json();
       toast({
         title: 'Connection Test',
-        description: data.success ? '✅ Successfully connected to Cloudflare API!' : '❌ Connection failed: ' + data.message
+        description: data.success ? '✅ Successfully connected to Cloudflare API!' : '❌ Connection failed: ' + data.message,
+        variant: data.success ? 'default' : 'destructive'
       });
     } catch (e: any) {
-      toast({ title: 'Test failed', description: e?.message || 'Could not test Cloudflare connection.', variant: 'destructive' });
+      toast({ title: 'Connection Failed', description: e?.message || 'Network error testing connection.', variant: 'destructive' });
     } finally {
       setLoading(false);
     }
@@ -959,40 +975,67 @@ const CloudflareSettings = () => {
   return (
     <Card className="bg-gray-800 border-gray-700">
       <CardHeader>
-        <CardTitle className="text-white">Cloudflare API Configuration</CardTitle>
+        <CardTitle className="text-white flex justify-between items-center">
+            <span>Cloudflare API Configuration</span>
+            <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={() => setShowDebug(!showDebug)} 
+                className="text-xs text-gray-500 hover:text-gray-300"
+            >
+                {showDebug ? 'Hide Debug Info' : 'Show Debug Info'}
+            </Button>
+        </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="bg-blue-900/20 border border-blue-600/30 text-blue-300 text-sm p-4 rounded">
           <p className="font-semibold mb-2">🌐 Setup Instructions:</p>
-          <ol className="list-decimal list-inside space-y-1">
-            <li>Log in to your <a href="https://dash.cloudflare.com" target="_blank" rel="noopener noreferrer" className="underline">Cloudflare Dashboard</a></li>
-            <li>Go to <strong>My Profile</strong> → <strong>API Tokens</strong></li>
+          <ol className="list-decimal list-inside space-y-1 ml-1">
+            <li>Log in to your <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-200">Cloudflare Dashboard</a></li>
+            <li>Go to <strong>My Profile → API Tokens</strong></li>
             <li>Click <strong>Create Token</strong></li>
-            <li>Use the <strong>"Edit zone DNS"</strong> template or custom permissions:</li>
-            <ul className="list-disc list-inside ml-6 mt-1">
-              <li>Zone → DNS → Edit</li>
-              <li>Zone → Zone → Read</li>
-            </ul>
+            <li>Use the "<strong>Edit zone DNS</strong>" template or custom permissions:
+              <ul className="list-disc list-inside ml-4 mt-1 text-xs opacity-80">
+                <li>Zone → DNS → Edit</li>
+                <li>Zone → Zone → Read</li>
+              </ul>
+            </li>
             <li>Select the zones (domains) you want to manage</li>
             <li>Copy the generated API token and paste it below</li>
           </ol>
         </div>
 
+        {showDebug && debugInfo && (
+            <div className="bg-black/50 border border-yellow-600/30 text-yellow-500 text-xs p-4 rounded font-mono overflow-x-auto">
+                <p className="font-bold text-yellow-400 mb-2">🔍 Server Debug Diagnostics:</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1">
+                    <div><span className="text-gray-500">Config Path:</span> {debugInfo.config_file_path}</div>
+                    <div><span className="text-gray-500">Exists:</span> <span className={debugInfo.config_file_exists ? "text-green-400" : "text-red-400"}>{String(debugInfo.config_file_exists)}</span></div>
+                    <div><span className="text-gray-500">Root Dir:</span> {debugInfo.calculated_root}</div>
+                    <div><span className="text-gray-500">Script:</span> {debugInfo.script_path}</div>
+                    <div className="col-span-2 border-t border-gray-700 my-1 pt-1"></div>
+                    <div><span className="text-gray-500">File Token:</span> {debugInfo.token_sources?.file_token}</div>
+                    <div><span className="text-gray-500">Env Token:</span> {debugInfo.token_sources?.env_token}</div>
+                    <div><span className="text-gray-500">Tokens Match:</span> <span className={debugInfo.token_sources?.match ? "text-green-400" : "text-red-400"}>{String(debugInfo.token_sources?.match)}</span></div>
+                </div>
+            </div>
+        )}
+
         <div className="grid grid-cols-1 gap-4">
           <div>
             <Label className="text-gray-300">Cloudflare API Token</Label>
-            <Input
-              type="password"
-              value={apiToken}
+            <Input 
+              type="password" 
+              value={apiToken} 
               onChange={e => {
                 setApiToken(e.target.value);
                 setSaved(false);
               }}
               placeholder="Enter your Cloudflare API token"
-              className="bg-gray-700 border-gray-600 text-white"
+              className="bg-gray-700 border-gray-600 text-white" 
               disabled={loading}
             />
-            <p className="text-xs text-gray-400 mt-1">
+            <p className="text-xs text-gray-500 mt-1">
               This token will be stored securely on the server and used for domain verification.
             </p>
           </div>
@@ -1000,24 +1043,17 @@ const CloudflareSettings = () => {
 
         <div className="flex gap-2">
           <Button onClick={save} className="bg-blue-600 hover:bg-blue-700" disabled={loading}>
-            {saved ? '✅ Saved' : 'Save Token'}
+            {saved ? '✅ Saved' : 'Save'}
           </Button>
-          <Button
-            variant="outline"
-            onClick={testConnection}
-            className="border-green-600 text-green-300 hover:bg-green-900/20"
+          <Button 
+            variant="outline" 
+            onClick={testConnection} 
+            className="border-green-600 text-green-300 hover:bg-green-900/20" 
             disabled={loading || !saved}
           >
             Test Connection
           </Button>
-          <Button
-            variant="outline"
-            onClick={load}
-            className="border-gray-600 text-gray-300 hover:bg-gray-700"
-            disabled={loading}
-          >
-            Reload
-          </Button>
+          <Button variant="outline" onClick={load} className="border-gray-600 text-gray-300 hover:bg-gray-700" disabled={loading}>Reload</Button>
         </div>
 
         {saved && (
@@ -1029,4 +1065,3 @@ const CloudflareSettings = () => {
     </Card>
   );
 };
-

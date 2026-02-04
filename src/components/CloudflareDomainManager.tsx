@@ -322,6 +322,9 @@ export const CloudflareDomainManager = () => {
                                     </SelectTrigger>
                                     <SelectContent className="bg-gray-700 border-gray-600">
                                         <SelectItem value="google" className="text-white hover:bg-gray-600">Google</SelectItem>
+                                        <SelectItem value="outlook" className="text-white hover:bg-gray-600">Outlook (Microsoft 365)</SelectItem>
+                                        <SelectItem value="zoho" className="text-white hover:bg-gray-600">Zoho Mail</SelectItem>
+                                        <SelectItem value="custom" className="text-white hover:bg-gray-600">Custom / Other</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>

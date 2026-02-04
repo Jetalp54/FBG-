@@ -3717,9 +3717,47 @@ async def save_cloudflare_config(request: Request):
         }
     except HTTPException:
         raise
+@app.get("/cloudflare/debug")
+async def debug_cloudflare_config(request: Request):
+    """Debug endpoint to inspect server-side Cloudflare configuration"""
+    try:
+        config = load_cloudflare_config_from_file()
+        file_token = config.get('api_token', '')
+        env_token = os.getenv('CLOUDFLARE_API_TOKEN', '')
+        
+        # Determine paths
+        cwd = os.getcwd()
+        abs_file = os.path.abspath(__file__)
+        root_dir_calc = ROOT_DIR
+        config_path = CLOUDFLARE_CONFIG_FILE
+        config_exists = os.path.exists(config_path)
+        
+        # Mask tokens
+        def mask(t): return (t[:4] + '...' + t[-4:]) if len(t) > 8 else 'Not Set'
+        
+        return {
+            "success": True,
+            "debug_info": {
+                "server_time": datetime.utcnow().isoformat(),
+                "working_directory": cwd,
+                "script_path": abs_file,
+                "calculated_root": root_dir_calc,
+                "config_file_path": config_path,
+                "config_file_exists": config_exists,
+                "token_sources": {
+                    "file_token": mask(file_token),
+                    "env_token": mask(env_token),
+                    "match": file_token == env_token
+                },
+                "python_path": sys.path
+            }
+        }
     except Exception as e:
-        logger.error(f"Failed to save Cloudflare config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
 
 @app.get("/cloudflare/test-connection")
 async def test_cloudflare_connection(request: Request):
