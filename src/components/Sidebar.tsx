@@ -1,15 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import { 
-  Home, 
-  Users, 
-  FolderOpen, 
-  Mail, 
-  FileText, 
-  Settings, 
+import {
+  Home,
+  Users,
+  FolderOpen,
+  Mail,
+  FileText,
+  Settings,
   Plus,
   Trash2,
   Brain,
-  TestTube
+  TestTube,
+  Globe
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -54,24 +55,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, []);
   const role = typeof window !== 'undefined' ? localStorage.getItem('app-role') || 'user' : 'user';
   const permsRaw = typeof window !== 'undefined' ? localStorage.getItem('app-permissions') : '{}';
-  const perms = typeof window !== 'undefined' ? (() => { 
-    try { 
+  const perms = typeof window !== 'undefined' ? (() => {
+    try {
       const parsed = JSON.parse(permsRaw || '{}');
       console.log('Raw permissions from localStorage:', permsRaw);
       console.log('Parsed permissions:', parsed);
       return parsed;
-    } catch (e) { 
+    } catch (e) {
       console.error('Failed to parse permissions:', e, permsRaw);
-      return {}; 
+      return {};
     }
   })() : {} as any;
-  
+
   const can = (key: string, fallback = false) => {
     const result = (role === 'admin') || (!!perms && perms[key] === true) || (fallback === true);
     console.log(`Permission check for ${key}: role=${role}, perms[${key}]=${perms[key]}, result=${result}`);
     return result;
   };
-  
+
   // Debug logging
   console.log('Sidebar Debug:', { role, perms, username: localStorage.getItem('app-username') });
 
@@ -81,6 +82,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'users', label: 'Users', icon: Users, key: 'users', show: can('users', false) },
     { id: 'campaigns', label: 'Campaigns', icon: Mail, key: 'campaigns', show: can('campaigns') },
     { id: 'templates', label: 'Templates', icon: FileText, key: 'templates', show: can('templates', false) },
+    { id: 'cloudflare', label: 'Domain Verification', icon: Globe, key: 'cloudflare', show: can('cloudflare', false) },
     { id: 'ai', label: 'AI Management', icon: Brain, key: 'ai', show: can('ai', false) },
     { id: 'test', label: 'Test Campaign', icon: TestTube, key: 'test', show: can('test', false) },
     { id: 'profiles', label: 'Profiles', icon: Settings, key: 'profiles', show: can('profiles', false) },
@@ -112,9 +114,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <h1 className="text-xl font-bold text-white mb-1">Firebase Manager</h1>
         <div className="flex items-center justify-between">
           <div className="text-xs text-gray-400">Signed in as <span className="text-gray-200 font-semibold">{(typeof window !== 'undefined' ? localStorage.getItem('app-username') : '') || 'user'}</span></div>
-          <Button 
-            size="sm" 
-            variant="ghost" 
+          <Button
+            size="sm"
+            variant="ghost"
             onClick={async () => {
               const username = localStorage.getItem('app-username');
               if (username) {
@@ -124,7 +126,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     const data = await res.json();
                     localStorage.setItem('app-role', data.role || 'user');
                     const normalized: any = {};
-                    ['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'].forEach(k => {
+                    ['projects', 'users', 'campaigns', 'templates', 'ai', 'test', 'profiles', 'auditLogs', 'settings', 'smtp'].forEach(k => {
                       normalized[k] = !!(data.permissions && data.permissions[k]);
                     });
                     localStorage.setItem('app-permissions', JSON.stringify(normalized));
@@ -142,7 +144,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             🔄
           </Button>
         </div>
-        
+
         {/* Profile Selection */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
@@ -156,7 +158,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <Plus className="w-4 h-4" />
             </Button>
           </div>
-          
+
           {profiles.length > 0 ? (
             <Select value={activeProfile} onValueChange={onProfileChange}>
               <SelectTrigger className="bg-gray-700 border-gray-600 text-white">
@@ -180,7 +182,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               No profiles yet
             </div>
           )}
-          
+
           {activeProfileData && (
             <div className="text-xs text-gray-500">
               {activeProfileData.description || 'No description'}
@@ -197,11 +199,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <li key={item.id}>
                 <button
                   onClick={() => setCurrentPage(item.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-colors ${
-                    currentPage === item.id
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-colors ${currentPage === item.id
                       ? 'bg-blue-600 text-white'
                       : 'text-gray-300 hover:bg-gray-700 hover:text-white'
-                  }`}
+                    }`}
                 >
                   <Icon className="w-5 h-5" />
                   {item.label}
@@ -243,8 +244,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <Button onClick={handleAddProfile} className="bg-green-600 hover:bg-green-700">
                 Add Profile
               </Button>
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 onClick={() => setShowAddProfile(false)}
                 className="border-gray-600 text-gray-300 hover:bg-gray-700"
               >

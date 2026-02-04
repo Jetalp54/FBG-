@@ -3819,6 +3819,248 @@ async def update_project(
     save_projects_to_file()
     return {"success": True, "project_id": project_id, "updated": updated}
 
+# ============================================================================
+# CLOUDFLARE DOMAIN VERIFICATION ENDPOINTS
+# ============================================================================
+
+# Import Cloudflare client (lazy load to avoid import errors if not configured)
+def get_cf_client():
+    """Get Cloudflare client with error handling"""
+    try:
+        from utils.cloudflare_client import get_cloudflare_client
+        return get_cloudflare_client()
+    except Exception as e:
+        logger.error(f"Failed to initialize Cloudflare client: {e}")
+        raise HTTPException(status_code=500, detail="Cloudflare not configured. Please set CLOUDFLARE_API_TOKEN")
+
+# Store domain verification status (in-memory for now, could move to DB)
+domain_verifications: Dict[str, Dict] = {}
+
+class DomainVerificationRequest(BaseModel):
+    domain: str
+    project_ids: List[str]
+    setup_email_dns: bool = False
+    email_provider: str = "google"
+
+class DomainStatusRequest(BaseModel):
+    domain: str
+
+@app.post("/cloudflare/initiate-verification")
+async def initiate_domain_verification(request: DomainVerificationRequest):
+    """
+    Initiate domain verification process
+    1. Create TXT verification record in Cloudflare
+    2. Start verification polling in background
+    3. Return verification details
+    """
+    try:
+        cf_client = get_cf_client()
+        domain = request.domain.strip().lower()
+        
+        # Validate domain format
+        if not domain or '.' not in domain:
+            raise HTTPException(status_code=400, detail="Invalid domain format")
+        
+        # Generate verification record
+        verification_domain, verification_token = cf_client.create_verification_record(domain)
+        
+        # Store verification status
+        verification_id = hashlib.md5(f"{domain}:{datetime.now()}".encode()).hexdigest()[:16]
+        domain_verifications[verification_id] = {
+            "domain": domain,
+            "project_ids": request.project_ids,
+            "verification_domain": verification_domain,
+            "verification_token": verification_token,
+            "status": "pending",
+            "created_at": datetime.now().isoformat(),
+            "setup_email_dns": request.setup_email_dns,
+            "email_provider": request.email_provider,
+            "attempts": 0,
+            "max_attempts": 30
+        }
+        
+        logger.info(f"Initiated verification for domain: {domain}")
+        
+        return {
+            "success": True,
+            "verification_id": verification_id,
+            "domain": domain,
+            "verification_domain": verification_domain,
+            "verification_token": verification_token,
+            "status": "pending",
+            "message": f"TXT record created. Verification will complete automatically in 1-5 minutes."
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to initiate domain verification: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
+
+@app.get("/cloudflare/verification-status/{verification_id}")
+async def get_verification_status(verification_id: str):
+    """Get current verification status and attempt verification if still pending"""
+    if verification_id not in domain_verifications:
+        raise HTTPException(status_code=404, detail="Verification ID not found")
+    
+    verification = domain_verifications[verification_id]
+    
+    # If still pending, try to verify
+    if verification["status"] == "pending":
+        try:
+            cf_client = get_cf_client()
+            verification["attempts"] += 1
+            
+            # Check if we've exceeded max attempts
+            if verification["attempts"] > verification["max_attempts"]:
+                verification["status"] = "timeout"
+                verification["message"] = "Verification timeout. DNS propagation may take longer. Please try again later."
+                return {
+                    "success": False,
+                    "verification_id": verification_id,
+                    **verification
+                }
+            
+            # Attempt verification
+            is_verified, message = cf_client.verify_txt_record(
+                verification["verification_domain"],
+                verification["verification_token"],
+                max_attempts=1  # Single attempt per status check
+            )
+            
+            if is_verified:
+                verification["status"] = "verified"
+                verification["verified_at"] = datetime.now().isoformat()
+                verification["message"] = "Domain verified successfully!"
+                
+                # Update Firebase projects with new domain
+                try:
+                    await update_firebase_projects_domain(
+                        verification["domain"],
+                        verification["project_ids"]
+                    )
+                    verification["firebase_updated"] = True
+                except Exception as e:
+                    logger.error(f"Failed to update Firebase projects: {e}")
+                    verification["firebase_updated"] = False
+                    verification["firebase_error"] = str(e)
+                
+                # Setup email DNS if requested
+                if verification.get("setup_email_dns"):
+                    try:
+                        email_results = cf_client.setup_email_dns(
+                            verification["domain"],
+                            verification["email_provider"]
+                        )
+                        verification["email_dns_results"] = email_results
+                        verification["email_dns_configured"] = all(email_results.values())
+                    except Exception as e:
+                        logger.error(f"Failed to setup email DNS: {e}")
+                        verification["email_dns_configured"] = False
+                        verification["email_dns_error"] = str(e)
+            
+            else:
+                verification["message"] = f"Verification in progress... (Attempt {verification['attempts']}/{verification['max_attempts']})"
+        
+        except Exception as e:
+            logger.error(f"Verification check failed: {str(e)}")
+            verification["status"] = "error"
+            verification["message"] = f"Verification error: {str(e)}"
+    
+    return {
+        "success": verification["status"] in ["verified", "pending"],
+        "verification_id": verification_id,
+        **verification
+    }
+
+async def update_firebase_projects_domain(domain: str, project_ids: List[str]) -> Dict:
+    """Update Firebase projects with authorized domain"""
+    results = {"successful": 0, "failed": 0, "details": []}
+    
+    for project_id in project_ids:
+        try:
+            # Load project
+            project = next((p for p in projects if p['id'] == project_id), None)
+            if not project:
+                results["failed"] += 1
+                results["details"].append({"project_id": project_id, "success": False, "error": "Project not found"})
+                continue
+            
+            # Update authDomain
+            project['authDomain'] = domain
+            
+            # Update Firebase Auth configuration
+            try:
+                cred_path = project.get('serviceAccount')
+                if cred_path and os.path.exists(cred_path):
+                    cred = credentials.Certificate(cred_path)
+                    scoped_credentials = cred.with_scopes([
+                        'https://www.googleapis.com/auth/cloud-platform',
+                        'https://www.googleapis.com/auth/identitytoolkit'
+                    ])
+                    authed_session = AuthorizedSession(scoped_credentials)
+                    
+                    # Update authorized domains
+                    url = f"https://identitytoolkit.googleapis.com/admin/v2/projects/{project_id}/config"
+                    config_data = {
+                        "authorizedDomains": [domain, f"{project_id}.firebaseapp.com"],
+                    }
+                    
+                    response = authed_session.patch(url, json=config_data, params={"updateMask": "authorizedDomains"})
+                    
+                    if response.status_code == 200:
+                        logger.info(f"Updated Firebase Auth domain for {project_id}: {domain}")
+                        results["successful"] += 1
+                        results["details"].append({"project_id": project_id, "success": True})
+                    else:
+                        raise Exception(f"API returned {response.status_code}: {response.text}")
+            
+            except Exception as e:
+                logger.error(f"Failed to update Firebase Auth for {project_id}: {e}")
+                results["failed"] += 1
+                results["details"].append({"project_id": project_id, "success": False, "error": str(e)})
+        
+        except Exception as e:
+            logger.error(f"Failed to update project {project_id}: {e}")
+            results["failed"] += 1
+            results["details"].append({"project_id": project_id, "success": False, "error": str(e)})
+    
+    # Save projects
+    save_projects_to_file()
+    
+    return results
+
+@app.get("/cloudflare/verified-domains")
+async def list_verified_domains():
+    """List all verified domains"""
+    verified = [
+        {
+            "verification_id": vid,
+            "domain": v["domain"],
+            "verified_at": v.get("verified_at"),
+            "project_ids": v.get("project_ids", []),
+            "email_dns_configured": v.get("email_dns_configured", False)
+        }
+        for vid, v in domain_verifications.items()
+        if v["status"] == "verified"
+    ]
+    
+    return {
+        "success": True,
+        "verified_domains": verified,
+        "count": len(verified)
+    }
+
+@app.delete("/cloudflare/verification/{verification_id}")
+async def cancel_verification(verification_id: str):
+    """Cancel/delete a verification"""
+    if verification_id in domain_verifications:
+        del domain_verifications[verification_id]
+        return {"success": True, "message": "Verification cancelled"}
+    else:
+        raise HTTPException(status_code=404, detail="Verification not found")
+
+
 if __name__ == "__main__":
     import uvicorn
     import os

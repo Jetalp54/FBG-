@@ -10,6 +10,7 @@ import { ProfileManager } from '@/components/ProfileManager';
 import { AppManagement } from '@/components/AppManagement';
 import { AIManagement } from '@/components/AIManagement';
 import { TestCampaign } from '@/components/TestCampaign';
+import { CloudflareDomainManager } from '@/components/CloudflareDomainManager';
 import { useEnhancedApp } from '@/contexts/EnhancedAppContext';
 import { Toaster } from '@/components/ui/toaster';
 import React, { Component, ErrorInfo, ReactNode } from 'react';
@@ -17,11 +18,11 @@ import { AuditLogsPage } from '@/components/AuditLogsPage';
 
 const AppContent = () => {
   const [currentPage, setCurrentPage] = useState('dashboard');
-  const { 
-    profiles, 
-    activeProfile, 
-    setActiveProfile, 
-    addProfile, 
+  const {
+    profiles,
+    activeProfile,
+    setActiveProfile,
+    addProfile,
     removeProfile,
     projects,
     users,
@@ -49,6 +50,8 @@ const AppContent = () => {
         return <CampaignsPage />;
       case 'templates':
         return <TemplatesPage />;
+      case 'cloudflare':
+        return <CloudflareDomainManager />;
       case 'profiles':
         return <ProfileManager />;
       case 'ai':
@@ -66,8 +69,8 @@ const AppContent = () => {
 
   return (
     <div className="flex h-screen bg-gray-900">
-      <Sidebar 
-        currentPage={currentPage} 
+      <Sidebar
+        currentPage={currentPage}
         setCurrentPage={setCurrentPage}
         profiles={profiles}
         activeProfile={activeProfile}

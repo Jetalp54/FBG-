@@ -22,6 +22,9 @@ requests
 httpx
 aiofiles
 
+# DNS Resolution (for Cloudflare domain verification)
+dnspython
+
 # Security & Authentication
 python-jose[cryptography]
 passlib[bcrypt]
