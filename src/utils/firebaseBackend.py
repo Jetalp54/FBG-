@@ -3805,9 +3805,92 @@ async def test_cloudflare_connection(request: Request):
             "message": f"Connection test failed: {str(e)}"
         }
 
-# ===================================================================
+# =================================================================== 
 # Cloudflare Domain Verification Endpoints
 # ===================================================================
+
+# Helper function to add domain to Firebase project
+async def update_firebase_projects_domain(domain: str, project_ids: List[str]) -> Dict:
+    """
+    Add verified domain to Firebase project's authorized domains
+    Uses Firebase REST API to update project configuration
+    """
+    results = {}
+    
+    for project_id in project_ids:
+        try:
+            # Get project from in-memory storage
+            if project_id not in projects:
+                results[project_id] = {"success": False, "error": "Project not found"}
+                continue
+            
+            project = projects[project_id]
+            service_account_json = project.get('serviceAccount')
+            
+            if not service_account_json:
+                results[project_id] = {"success": False, "error": "Service account not configured"}
+                continue
+            
+            # Use service account to authenticate
+            credentials_obj = service_account.Credentials.from_service_account_info(
+                service_account_json,
+                scopes=['https://www.googleapis.com/auth/firebase', 'https://www.googleapis.com/auth/cloud-platform']
+            )
+            
+            authed_session = AuthorizedSession(credentials_obj)
+            
+            # Fetch current authorized domains
+            config_url = f"https://identitytoolkit.googleapis.com/admin/v2/projects/{project_id}/config"
+            response = authed_session.get(config_url)
+            
+            if response.status_code != 200:
+                results[project_id] = {"success": False, "error": f"Failed to fetch config: {response.text}"}
+                continue
+            
+            config = response.json()
+            
+            # Get existing authorized domains
+            authorized_domains = config.get('authorizedDomains', [])
+            
+            # Add domain if not already present
+            if domain not in authorized_domains:
+                authorized_domains.append(domain)
+                
+                # Update configuration
+                update_payload = {
+                    "authorizedDomains": authorized_domains
+                }
+                
+                update_response = authed_session.patch(
+                    config_url,
+                    json=update_payload,
+                    params={"updateMask": "authorizedDomains"}
+                )
+                
+                if update_response.status_code == 200:
+                    results[project_id] = {
+                        "success": True,
+                        "message": f"Domain {domain} added to authorized domains",
+                        "authorized_domains": authorized_domains
+                    }
+                    logger.info(f"Added domain {domain} to project {project_id}")
+                else:
+                    results[project_id] = {
+                        "success": False,
+                        "error": f"Failed to update: {update_response.text}"
+                    }
+            else:
+                results[project_id] = {
+                    "success": True,
+                    "message": f"Domain {domain} already authorized",
+                    "authorized_domains": authorized_domains
+                }
+                
+        except Exception as e:
+            logger.error(f"Failed to add domain to project {project_id}: {e}")
+            results[project_id] = {"success": False, "error": str(e)}
+    
+    return results
 
 # In-memory storage for domain verifications
 domain_verifications = {}
