@@ -251,10 +251,23 @@ class CloudflareClient:
 
 # Singleton instance
 _cloudflare_client: Optional[CloudflareClient] = None
+_last_api_token: Optional[str] = None
 
 def get_cloudflare_client() -> CloudflareClient:
     """Get or create Cloudflare client instance"""
-    global _cloudflare_client
-    if _cloudflare_client is None:
-        _cloudflare_client = CloudflareClient()
+    global _cloudflare_client, _last_api_token
+    
+    # Get current token from environment
+    current_token = os.getenv('CLOUDFLARE_API_TOKEN')
+    
+    # Reset client if token has changed or doesn't exist yet
+    if _cloudflare_client is None or current_token != _last_api_token:
+        if current_token:
+            _cloudflare_client = CloudflareClient(api_token=current_token)
+            _last_api_token = current_token
+            logger.info("Cloudflare client (re)initialized with updated token")
+        else:
+            _cloudflare_client = CloudflareClient()  # Will fail if no token in env
+            _last_api_token = os.getenv('CLOUDFLARE_API_TOKEN')
+    
     return _cloudflare_client

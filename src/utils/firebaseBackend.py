@@ -3588,6 +3588,33 @@ async def get_project_domains():
 # In-memory storage for Cloudflare API token (can be moved to database later)
 cloudflare_config = {}
 
+def get_cf_client():
+    """Get Cloudflare client with error handling"""
+    try:
+        # First try to get token from in-memory config
+        token = cloudflare_config.get('api_token') or os.getenv('CLOUDFLARE_API_TOKEN')
+        
+        if not token:
+            raise HTTPException(
+                status_code=500, 
+                detail="Cloudflare not configured. Please set CLOUDFLARE_API_TOKEN in Settings → Cloudflare"
+            )
+        
+        # Make sure environment variable is set for the client
+        if cloudflare_config.get('api_token'):
+            os.environ['CLOUDFLARE_API_TOKEN'] = cloudflare_config['api_token']
+        
+        from utils.cloudflare_client import get_cloudflare_client
+        return get_cloudflare_client()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to initialize Cloudflare client: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Cloudflare initialization failed: {str(e)}"
+        )
+
 @app.get("/cloudflare/config")
 async def get_cloudflare_config(request: Request):
     """Get Cloudflare configuration (token masked)"""
@@ -3674,6 +3701,239 @@ async def test_cloudflare_connection(request: Request):
             "success": False,
             "message": f"Connection test failed: {str(e)}"
         }
+
+# ===================================================================
+# Cloudflare Domain Verification Endpoints
+# ===================================================================
+
+# In-memory storage for domain verifications
+domain_verifications = {}
+
+class DomainVerificationRequest(BaseModel):
+    domain: str
+    project_ids: List[str]
+    setup_email_dns: bool = False
+    email_provider: str = "google"
+
+@app.post("/cloudflare/initiate-verification")
+async def initiate_domain_verification(request: DomainVerificationRequest):
+    """
+    Initiate domain verification process
+    1. Create TXT verification record in Cloudflare
+    2. Start verification polling in background
+    3. Return verification details
+    """
+    try:
+        cf_client = get_cf_client()
+        domain = request.domain.strip().lower()
+        
+        # Validate domain format
+        if not domain or '.' not in domain:
+            raise HTTPException(status_code=400, detail="Invalid domain format")
+        
+        # Generate verification record
+        verification_domain, verification_token = cf_client.create_verification_record(domain)
+        
+        # Store verification status
+        verification_id = hashlib.md5(f"{domain}:{datetime.now()}".encode()).hexdigest()[:16]
+        domain_verifications[verification_id] = {
+            "domain": domain,
+            "verification_domain": verification_domain,
+            "verification_token": verification_token,
+            "project_ids": request.project_ids,
+            "setup_email_dns": request.setup_email_dns,
+            "email_provider": request.email_provider,
+            "status": "pending",
+            "created_at": datetime.now().isoformat(),
+            "attempts": 0
+        }
+        
+        logger.info(f"Initiated verification for domain: {domain}")
+        
+        return {
+            "success": True,
+            "verification_id": verification_id,
+            "domain": domain,
+            "verification_domain": verification_domain,
+            "verification_token": verification_token,
+            "status": "pending",
+            "message": f"TXT record created. Verification will complete automatically in 1-5 minutes."
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to initiated domain verification: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/cloudflare/verification-status/{verification_id}")
+async def get_verification_status(verification_id: str):
+    """Check verification status and attempt DNS verification if pending"""
+    try:
+        if verification_id not in domain_verifications:
+            raise HTTPException(status_code=404, detail="Verification not found")
+        
+        verification = domain_verifications[verification_id]
+        
+        # If already verified or failed, return current status
+        if verification["status"] in ["verified", "failed", "timeout"]:
+            return {
+                "success": verification["status"] == "verified",
+                "verification_id": verification_id,
+                **verification
+            }
+        
+        # Attempt DNS verification
+        cf_client = get_cf_client()
+        verification["attempts"] += 1
+        
+        # Check if we've exceeded max attempts (30 attempts = 5 minutes with 10s polls)
+        if verification["attempts"] > 30:
+            verification["status"] = "timeout"
+            verification["message"] = "Verification timeout. DNS propagation may take up to 24 hours."
+            return {
+                "success": False,
+                "verification_id": verification_id,
+                **verification
+            }
+        
+        # Verify TXT record
+        verified, message = cf_client.verify_txt_record(
+            verification["verification_domain"],
+            verification["verification_token"],
+            max_attempts=1  # Single check per status request
+        )
+        
+        if verified:
+            verification["status"] = "verified"
+            verification["verified_at"] = datetime.now().isoformat()
+            verification["message"] = "Domain verified successfully"
+            
+            # Update Firebase projects
+            try:
+                update_result = await update_firebase_projects_domain(
+                    verification["domain"],
+                    verification["project_ids"]
+                )
+                verification["firebase_update"] = update_result
+            except Exception as e:
+                logger.error(f"Failed to update Firebase projects: {e}")
+                verification["firebase_update"] = {"error": str(e)}
+            
+            # Setup email DNS if requested
+            if verification["setup_email_dns"]:
+                try:
+                    email_result = cf_client.setup_email_dns(
+                        verification["domain"],
+                        verification["email_provider"]
+                    )
+                    verification["email_dns"] = email_result
+                except Exception as e:
+                    logger.error(f"Failed to setup email DNS: {e}")
+                    verification["email_dns"] = {"error": str(e)}
+            
+            logger.info(f"Domain verified: {verification['domain']}")
+        else:
+            verification["message"] = message
+        
+        return {
+            "success": verified,
+            "verification_id": verification_id,
+            **verification
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to check verification status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def update_firebase_projects_domain(domain: str, project_ids: List[str]) -> Dict:
+    """Update Firebase projects with verified custom domain"""
+    results = {}
+    
+    for project_id in project_ids:
+        try:
+            # Load project from file/database
+            project = load_project(project_id=project_id)
+            if not project:
+                results[project_id] = {"success": False, "error": "Project not found"}
+                continue
+            
+            # Update authDomain
+            project["authDomain"] = domain
+            
+            # Update Firebase project configuration via API
+            # This would require Firebase Admin SDK to update authorized domains
+            # For now, we'll just update local project data
+            save_project(project)
+            
+            results[project_id] = {"success": True, "message": "Domain updated"}
+            logger.info(f"Updated domain for project {project_id}: {domain}")
+        except Exception as e:
+            logger.error(f"Failed to update project {project_id}: {e}")
+            results[project_id] = {"success": False, "error": str(e)}
+    
+    return results
+
+@app.get("/cloudflare/verified-domains")
+async def list_verified_domains():
+    """List all verified domains"""
+    try:
+        verified = [
+            {
+                "verification_id": vid,
+                "domain": v["domain"],
+                "verified_at": v.get("verified_at"),
+                "project_ids": v["project_ids"]
+            }
+            for vid, v in domain_verifications.items()
+            if v["status"] == "verified"
+        ]
+        
+        return {
+            "success": True,
+            "verified_domains": verified,
+            "count": len(verified)
+        }
+    except Exception as e:
+        logger.error(f"Failed to list verified domains: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/cloudflare/verification/{verification_id}")
+async def delete_verification(verification_id: str):
+    """Delete verification record"""
+    try:
+        if verification_id not in domain_verifications:
+            raise HTTPException(status_code=404, detail="Verification not found")
+        
+        verification = domain_verifications[verification_id]
+        
+        # Optionally delete DNS record from Cloudflare
+        try:
+            cf_client = get_cf_client()
+            zone_id = cf_client.get_zone_id(verification["domain"])
+            if zone_id:
+                records = cf_client.list_dns_records(
+                    zone_id,
+                    "TXT",
+                    verification["verification_domain"]
+                )
+                for record in records:
+                    cf_client.delete_dns_record(zone_id, record['id'])
+        except Exception as e:
+            logger.warning(f"Failed to delete DNS record: {e}")
+        
+        # Remove from memory
+        del domain_verifications[verification_id]
+        
+        return {
+            "success": True,
+            "message": "Verification deleted"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete verification: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ===================================================================
 # Main Execution
