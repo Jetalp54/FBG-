@@ -3581,6 +3581,104 @@ async def get_project_domains():
         logger.error(f"Failed to get project domains: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get domains: {str(e)}")
 
+# ===================================================================
+# Cloudflare Configuration Endpoints
+# ===================================================================
+
+# In-memory storage for Cloudflare API token (can be moved to database later)
+cloudflare_config = {}
+
+@app.get("/cloudflare/config")
+async def get_cloudflare_config(request: Request):
+    """Get Cloudflare configuration (token masked)"""
+    try:
+        token = cloudflare_config.get('api_token', '')
+        # Mask the token for display
+        masked_token = token[:8] + '*' * (len(token) - 8) if len(token) > 8 else ''
+        return {
+            "success": True,
+            "api_token": masked_token,
+            "configured": bool(token)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get Cloudflare config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/cloudflare/config")
+async def save_cloudflare_config(request: Request):
+    """Save Cloudflare API token"""
+    try:
+        data = await request.json()
+        api_token = data.get('api_token', '').strip()
+        
+        if not api_token:
+            raise HTTPException(status_code=400, detail="API token is required")
+        
+        # Store the token
+        cloudflare_config['api_token'] = api_token
+        
+        # Update environment variable for cloudflare_client
+        os.environ['CLOUDFLARE_API_TOKEN'] = api_token
+        
+        logger.info("Cloudflare API token saved successfully")
+        return {
+            "success": True,
+            "message": "Cloudflare API token saved successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to save Cloudflare config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/cloudflare/test-connection")
+async def test_cloudflare_connection(request: Request):
+    """Test Cloudflare API connection"""
+    try:
+        api_token = cloudflare_config.get('api_token') or os.getenv('CLOUDFLARE_API_TOKEN')
+        
+        if not api_token:
+            return {
+                "success": False,
+                "message": "Cloudflare API token not configured"
+            }
+        
+        # Test the connection by making a simple API call
+        import requests
+        headers = {
+            'Authorization': f'Bearer {api_token}',
+            'Content-Type': 'application/json'
+        }
+        
+        response = requests.get(
+            'https://api.cloudflare.com/client/v4/user/tokens/verify',
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('success'):
+                return {
+                    "success": True,
+                    "message": "Successfully connected to Cloudflare API"
+                }
+        
+        return {
+            "success": False,
+            "message": f"Connection failed: {response.text}"
+        }
+    except Exception as e:
+        logger.error(f"Failed to test Cloudflare connection: {e}")
+        return {
+            "success": False,
+            "message": f"Connection test failed: {str(e)}"
+        }
+
+# ===================================================================
+# Main Execution
+# ===================================================================
+
 @app.post("/api/configure-smtp")
 async def configure_smtp(data: SMTPConfig, request: Request):
     """Configure SMTP settings for a single Firebase project"""

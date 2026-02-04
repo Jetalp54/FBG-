@@ -9,9 +9,9 @@ import { useToast } from '@/hooks/use-toast';
 
 const API_BASE_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:8000" : "/api";
 
-type AppUser = { 
-  username: string; 
-  role: 'admin' | 'it' | 'user'; 
+type AppUser = {
+  username: string;
+  role: 'admin' | 'it' | 'user';
   overrides?: Record<string, boolean>;
   email?: string;
 };
@@ -37,7 +37,7 @@ const DEFAULT_PERMISSIONS: Record<string, string[]> = {
 
 export const AppManagement = () => {
   const { toast } = useToast();
-  const [tab, setTab] = useState<'overview' | 'users' | 'security' | 'smtp'>('users');
+  const [tab, setTab] = useState<'overview' | 'users' | 'security' | 'smtp' | 'cloudflare'>('users');
   const [appUsers, setAppUsers] = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(false);
   const [adminUser, setAdminUser] = useState(localStorage.getItem('admin-basic-user') || 'admin');
@@ -68,14 +68,14 @@ export const AppManagement = () => {
       const res = await fetch(`${API_BASE_URL}/app-users`, { headers });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      const users = (data.users || []).map((u: any) => ({ 
-        username: u.username, 
-        role: (u.role || 'user') as AppUser['role'], 
+      const users = (data.users || []).map((u: any) => ({
+        username: u.username,
+        role: (u.role || 'user') as AppUser['role'],
         overrides: u.overrides || {},
         email: u.email || ''
       }));
       setAppUsers(users);
-      
+
       // Compute effective permissions for each user
       const effective: Record<string, Record<string, boolean>> = {};
       for (const user of users) {
@@ -86,7 +86,7 @@ export const AppManagement = () => {
             effective[user.username] = effectiveData.permissions || {};
           } else {
             // Fallback: compute locally
-            const features = ['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'];
+            const features = ['projects', 'users', 'campaigns', 'templates', 'ai', 'test', 'profiles', 'auditLogs', 'settings', 'smtp'];
             if (user.role === 'admin') {
               effective[user.username] = Object.fromEntries(features.map(f => [f, true]));
             } else {
@@ -95,7 +95,7 @@ export const AppManagement = () => {
           }
         } catch {
           // Fallback computation
-          const features = ['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'];
+          const features = ['projects', 'users', 'campaigns', 'templates', 'ai', 'test', 'profiles', 'auditLogs', 'settings', 'smtp'];
           if (user.role === 'admin') {
             effective[user.username] = Object.fromEntries(features.map(f => [f, true]));
           } else {
@@ -137,7 +137,7 @@ export const AppManagement = () => {
     // Validate overrides: only accept known features to prevent accidental grants
     const cleanOverrides: Record<string, boolean> = {};
     Object.entries(newUser.overrides).forEach(([k, v]) => {
-      if (['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'].includes(k)) {
+      if (['projects', 'users', 'campaigns', 'templates', 'ai', 'test', 'profiles', 'auditLogs', 'settings', 'smtp'].includes(k)) {
         cleanOverrides[k] = !!v;
       }
     });
@@ -148,7 +148,7 @@ export const AppManagement = () => {
       await loadUsers();
       toast({ title: 'User added', description: 'App user created.' });
       // advise admin to share creds and log out/in to apply new permissions
-      try { localStorage.setItem('app-permissions', ''); } catch {}
+      try { localStorage.setItem('app-permissions', ''); } catch { }
     } catch (e: any) {
       toast({ title: 'Add failed', description: e?.message || 'Could not add user.', variant: 'destructive' });
     }
@@ -183,10 +183,10 @@ export const AppManagement = () => {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE_URL}/app-users/${encodeURIComponent(username)}`, { 
-        method: 'PUT', 
-        headers, 
-        body: JSON.stringify({ password: pwd }) 
+      const res = await fetch(`${API_BASE_URL}/app-users/${encodeURIComponent(username)}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ password: pwd })
       });
       if (!res.ok) throw new Error(await res.text());
       toast({ title: 'Password reset', description: `Password updated for ${username}.` });
@@ -239,21 +239,21 @@ export const AppManagement = () => {
 
   const saveEditUser = async () => {
     if (!editingUser) return;
-    
+
     try {
       const updates: any = {};
       if (editingUser.role !== selectedUser?.role) updates.role = editingUser.role;
       if (editingUser.email !== selectedUser?.email) updates.email = editingUser.email;
-      
+
       // Check if overrides changed
       const currentOverrides = selectedUser?.overrides || {};
       const newOverrides = editingUser.overrides || {};
-      const overridesChanged = Object.keys(currentOverrides).some(key => 
+      const overridesChanged = Object.keys(currentOverrides).some(key =>
         currentOverrides[key] !== newOverrides[key]
-      ) || Object.keys(newOverrides).some(key => 
+      ) || Object.keys(newOverrides).some(key =>
         currentOverrides[key] !== newOverrides[key]
       );
-      
+
       if (overridesChanged) {
         updates.overrides = newOverrides;
       }
@@ -265,12 +265,12 @@ export const AppManagement = () => {
           body: JSON.stringify(updates)
         });
         if (!res.ok) throw new Error(await res.text());
-        
+
         await loadUsers();
         setSelectedUser(editingUser);
         toast({ title: 'User updated', description: `${editingUser.username} updated successfully.` });
       }
-      
+
       setEditMode(false);
       setEditingUser(null);
       setEditorDirty(false);
@@ -283,7 +283,7 @@ export const AppManagement = () => {
     setSelectedUser(u);
     setSelectedRole(u.role);
     // Ensure all known features are present in the overrides display
-    const allFeatures = ['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'];
+    const allFeatures = ['projects', 'users', 'campaigns', 'templates', 'ai', 'test', 'profiles', 'auditLogs', 'settings', 'smtp'];
     const normalizedOverrides: Record<string, boolean> = {};
     allFeatures.forEach(feature => {
       normalizedOverrides[feature] = !!(u.overrides || {})[feature];
@@ -300,7 +300,7 @@ export const AppManagement = () => {
     // Clean overrides
     const clean: Record<string, boolean> = {};
     Object.entries(selectedOverrides).forEach(([k, v]) => {
-      if (['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'].includes(k)) {
+      if (['projects', 'users', 'campaigns', 'templates', 'ai', 'test', 'profiles', 'auditLogs', 'settings', 'smtp'].includes(k)) {
         clean[k] = !!v;
       }
     });
@@ -336,11 +336,12 @@ export const AppManagement = () => {
           <p className="text-gray-400">Manage application users, roles and security.</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant={tab==='overview' ? 'default' : 'outline'} onClick={() => setTab('overview')} className={tab==='overview' ? 'bg-blue-600 hover:bg-blue-700' : 'border-gray-600 text-gray-300 hover:bg-gray-700'}>Overview</Button>
-          <Button variant={tab==='users' ? 'default' : 'outline'} onClick={() => setTab('users')} className={tab==='users' ? 'bg-blue-600 hover:bg-blue-700' : 'border-gray-600 text-gray-300 hover:bg-gray-700'}>Users</Button>
+          <Button variant={tab === 'overview' ? 'default' : 'outline'} onClick={() => setTab('overview')} className={tab === 'overview' ? 'bg-blue-600 hover:bg-blue-700' : 'border-gray-600 text-gray-300 hover:bg-gray-700'}>Overview</Button>
+          <Button variant={tab === 'users' ? 'default' : 'outline'} onClick={() => setTab('users')} className={tab === 'users' ? 'bg-blue-600 hover:bg-blue-700' : 'border-gray-600 text-gray-300 hover:bg-gray-700'}>Users</Button>
           {/* Roles & Permissions tab removed */}
-          <Button variant={tab==='security' ? 'default' : 'outline'} onClick={() => setTab('security')} className={tab==='security' ? 'bg-blue-600 hover:bg-blue-700' : 'border-gray-600 text-gray-300 hover:bg-gray-700'}>Security</Button>
-          <Button variant={tab==='smtp' ? 'default' : 'outline'} onClick={() => setTab('smtp')} className={tab==='smtp' ? 'bg-blue-600 hover:bg-blue-700' : 'border-gray-600 text-gray-300 hover:bg-gray-700'}>SMTP Config</Button>
+          <Button variant={tab === 'security' ? 'default' : 'outline'} onClick={() => setTab('security')} className={tab === 'security' ? 'bg-blue-600 hover:bg-blue-700' : 'border-gray-600 text-gray-300 hover:bg-gray-700'}>Security</Button>
+          <Button variant={tab === 'smtp' ? 'default' : 'outline'} onClick={() => setTab('smtp')} className={tab === 'smtp' ? 'bg-blue-600 hover:bg-blue-700' : 'border-gray-600 text-gray-300 hover:bg-gray-700'}>SMTP Config</Button>
+          <Button variant={tab === 'cloudflare' ? 'default' : 'outline'} onClick={() => setTab('cloudflare')} className={tab === 'cloudflare' ? 'bg-blue-600 hover:bg-blue-700' : 'border-gray-600 text-gray-300 hover:bg-gray-700'}>Cloudflare</Button>
         </div>
       </div>
 
@@ -353,8 +354,8 @@ export const AppManagement = () => {
             <div className="flex items-center gap-2">
               <Input placeholder="Search users..." value={search} onChange={e => setSearch(e.target.value)} className="bg-gray-700 border-gray-600 text-white w-64" />
               <Button variant="outline" onClick={loadUsers} className="border-gray-600 text-gray-300 hover:bg-gray-700">Reload</Button>
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 onClick={async () => {
                   try {
                     const res = await fetch(`${API_BASE_URL}/app-users/migrate`, { method: 'POST', headers });
@@ -380,7 +381,7 @@ export const AppManagement = () => {
                   <tr>
                     <th className="text-left p-2">User</th>
                     <th className="text-left p-2">Role</th>
-                    {['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'].map(f => (
+                    {['projects', 'users', 'campaigns', 'templates', 'ai', 'test', 'profiles', 'auditLogs', 'settings', 'smtp'].map(f => (
                       <th key={f} className="text-left p-2 capitalize">{f}</th>
                     ))}
                   </tr>
@@ -394,7 +395,7 @@ export const AppManagement = () => {
                         <tr key={u.username} className="border-t border-gray-700">
                           <td className="p-2">{u.username}</td>
                           <td className="p-2 capitalize">{u.role}</td>
-                          {['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'].map(f => (
+                          {['projects', 'users', 'campaigns', 'templates', 'ai', 'test', 'profiles', 'auditLogs', 'settings', 'smtp'].map(f => (
                             <td key={f} className="p-2">{eff[f] ? '✅' : '—'}</td>
                           ))}
                         </tr>
@@ -476,7 +477,7 @@ export const AppManagement = () => {
               <div className="border rounded border-gray-700 p-3">
                 <div className="text-gray-300 mb-2">Overrides (optional)</div>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                  {['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'].map((f) => (
+                  {['projects', 'users', 'campaigns', 'templates', 'ai', 'test', 'profiles', 'auditLogs', 'settings', 'smtp'].map((f) => (
                     <label key={f} className="flex items-center gap-2 text-sm text-gray-300">
                       <Checkbox checked={!!newUser.overrides[f as keyof typeof newUser.overrides]} onCheckedChange={(v) => setNewUser(prev => ({ ...prev, overrides: { ...prev.overrides, [f]: v === true } }))} />
                       <span>{f}</span>
@@ -498,14 +499,14 @@ export const AppManagement = () => {
                 {loading ? <div className="text-gray-400">Loading...</div> : appUsers
                   .filter(u => !search.trim() || u.username.toLowerCase().includes(search.toLowerCase()))
                   .map(u => (
-                  <div key={u.username} className={`p-3 rounded cursor-pointer ${selectedUser?.username===u.username ? 'bg-blue-900/30 border border-blue-600/40' : 'bg-gray-700'}`} onClick={() => pickUser(u)}>
-                    <div className="flex items-center justify-between">
-                      <div className="text-white">{u.username}</div>
-                      <div className="text-xs text-gray-400 capitalize">{u.role}</div>
+                    <div key={u.username} className={`p-3 rounded cursor-pointer ${selectedUser?.username === u.username ? 'bg-blue-900/30 border border-blue-600/40' : 'bg-gray-700'}`} onClick={() => pickUser(u)}>
+                      <div className="flex items-center justify-between">
+                        <div className="text-white">{u.username}</div>
+                        <div className="text-xs text-gray-400 capitalize">{u.role}</div>
+                      </div>
+                      <div className="text-xs text-gray-400 mt-1">Overrides: {Object.values(u.overrides || {}).filter(Boolean).length}</div>
                     </div>
-                    <div className="text-xs text-gray-400 mt-1">Overrides: {Object.values(u.overrides||{}).filter(Boolean).length}</div>
-                  </div>
-                ))}
+                  ))}
               </div>
             </CardContent>
           </Card>
@@ -528,28 +529,28 @@ export const AppManagement = () => {
                     <div>
                       <Label className="text-gray-300">Email</Label>
                       {editMode && editingUser ? (
-                        <Input 
-                          value={editingUser.email || ''} 
+                        <Input
+                          value={editingUser.email || ''}
                           onChange={(e) => {
                             setEditingUser(prev => prev ? { ...prev, email: e.target.value } : null);
                             setEditorDirty(true);
                           }}
-                          className="bg-gray-700 border-gray-600 text-white" 
+                          className="bg-gray-700 border-gray-600 text-white"
                           placeholder="user@example.com"
                         />
                       ) : (
-                        <Input 
-                          value={selectedUser.email || ''} 
-                          disabled 
-                          className="bg-gray-700 border-gray-600 text-white" 
+                        <Input
+                          value={selectedUser.email || ''}
+                          disabled
+                          className="bg-gray-700 border-gray-600 text-white"
                         />
                       )}
                     </div>
                     <div>
                       <Label className="text-gray-300">Role</Label>
                       {editMode && editingUser ? (
-                        <Select 
-                          value={editingUser.role} 
+                        <Select
+                          value={editingUser.role}
                           onValueChange={(v) => {
                             setEditingUser(prev => prev ? { ...prev, role: v as any } : null);
                             setEditorDirty(true);
@@ -565,11 +566,11 @@ export const AppManagement = () => {
                           </SelectContent>
                         </Select>
                       ) : (
-                        <Select 
-                          value={selectedRole} 
-                          onValueChange={(v) => { 
-                            setSelectedRole(v as any); 
-                            setEditorDirty(true); 
+                        <Select
+                          value={selectedRole}
+                          onValueChange={(v) => {
+                            setSelectedRole(v as any);
+                            setEditorDirty(true);
                           }}
                         >
                           <SelectTrigger className="bg-gray-700 border-gray-600 text-white">
@@ -606,22 +607,22 @@ export const AppManagement = () => {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button 
-                      variant="outline" 
+                    <Button
+                      variant="outline"
                       onClick={() => resetPassword(selectedUser.username)}
                       className="border-yellow-600 text-yellow-300 hover:bg-yellow-900/20"
                     >
                       Reset Password
                     </Button>
-                    <Button 
-                      variant="outline" 
+                    <Button
+                      variant="outline"
                       onClick={() => sendPasswordResetEmail(selectedUser.username)}
                       className="border-blue-600 text-blue-300 hover:bg-blue-900/20"
                     >
                       Send Reset Email
                     </Button>
-                    <Button 
-                      variant="outline" 
+                    <Button
+                      variant="outline"
                       onClick={() => deleteUser(selectedUser.username)}
                       className="border-red-600 text-red-300 hover:bg-red-900/20"
                     >
@@ -631,29 +632,29 @@ export const AppManagement = () => {
                   <div>
                     <div className="text-gray-300 mb-2">Overrides</div>
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                      {['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'].map(f => (
+                      {['projects', 'users', 'campaigns', 'templates', 'ai', 'test', 'profiles', 'auditLogs', 'settings', 'smtp'].map(f => (
                         <label key={f} className="flex items-center gap-2 text-sm text-gray-300">
-                          <Checkbox 
-                            checked={editMode && editingUser ? !!(editingUser.overrides || {})[f] : !!selectedOverrides[f]} 
-                            onCheckedChange={(v) => { 
+                          <Checkbox
+                            checked={editMode && editingUser ? !!(editingUser.overrides || {})[f] : !!selectedOverrides[f]}
+                            onCheckedChange={(v) => {
                               if (editMode && editingUser) {
-                                setEditingUser(prev => prev ? { 
-                                  ...prev, 
-                                  overrides: { ...(prev.overrides || {}), [f]: v === true } 
+                                setEditingUser(prev => prev ? {
+                                  ...prev,
+                                  overrides: { ...(prev.overrides || {}), [f]: v === true }
                                 } : null);
                               } else {
                                 setSelectedOverrides(prev => ({ ...prev, [f]: v === true }));
                               }
-                              setEditorDirty(true); 
-                            }} 
+                              setEditorDirty(true);
+                            }}
                           />
                           <span>{f}</span>
                         </label>
                       ))}
                     </div>
                     <div className="text-xs text-gray-500 mt-1">
-                      {editMode ? 
-                        'These override the default role permissions for this user.' : 
+                      {editMode ?
+                        'These override the default role permissions for this user.' :
                         'Click "Edit User" to modify these permissions.'
                       }
                     </div>
@@ -696,11 +697,15 @@ export const AppManagement = () => {
       {tab === 'smtp' && (
         <SmtpSettings />
       )}
+
+      {tab === 'cloudflare' && (
+        <CloudflareSettings />
+      )}
     </div>
   );
 };
 
-const FEATURES = ['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'] as const;
+const FEATURES = ['projects', 'users', 'campaigns', 'templates', 'ai', 'test', 'profiles', 'auditLogs', 'settings', 'smtp'] as const;
 type FeatureKey = typeof FEATURES[number];
 
 const RoleMatrixEditor = ({ isAdmin, headers }: { isAdmin: boolean; headers: any }) => {
@@ -766,7 +771,7 @@ const RoleMatrixEditor = ({ isAdmin, headers }: { isAdmin: boolean; headers: any
                 <tr key={f} className="border-t border-gray-700">
                   <td className="p-2 font-medium">{f}</td>
                   {roles.map(r => (
-                    <td key={r+f} className="p-2">
+                    <td key={r + f} className="p-2">
                       <Checkbox disabled={!isAdmin} checked={!!matrix[r]?.[f]} onCheckedChange={() => toggle(r, f)} />
                     </td>
                   ))}
@@ -871,4 +876,157 @@ const SmtpSettings = () => {
   );
 };
 
+const CloudflareSettings = () => {
+  const { toast } = useToast();
+  const [adminUser] = useState(localStorage.getItem('admin-basic-user') || 'admin');
+  const [adminPass] = useState(localStorage.getItem('admin-basic-pass') || 'admin');
+  const headers = useMemo(() => ({
+    'Content-Type': 'application/json',
+    'Authorization': 'Basic ' + btoa(`${adminUser}:${adminPass}`),
+  }), [adminUser, adminPass]);
+
+  const [apiToken, setApiToken] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/cloudflare/config`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setApiToken(data.api_token || '');
+        setSaved(!!data.api_token);
+      }
+    } catch (e) {
+      console.log('Failed to load Cloudflare config:', e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    if (!apiToken.trim()) {
+      toast({ title: 'API Token Required', description: 'Please enter a Cloudflare API token.', variant: 'destructive' });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/cloudflare/config`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ api_token: apiToken.trim() })
+      });
+
+      if (!res.ok) throw new Error(await res.text());
+
+      const data = await res.json();
+      setSaved(true);
+      toast({ title: 'Saved!', description: data.message || 'Cloudflare API token saved successfully.' });
+    } catch (e: any) {
+      toast({ title: 'Save failed', description: e?.message || 'Could not save Cloudflare config.', variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const testConnection = async () => {
+    if (!apiToken.trim()) {
+      toast({ title: 'API Token Required', description: 'Please save an API token first.', variant: 'destructive' });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/cloudflare/test-connection`, { headers });
+      if (!res.ok) throw new Error(await res.text());
+
+      const data = await res.json();
+      toast({
+        title: 'Connection Test',
+        description: data.success ? '✅ Successfully connected to Cloudflare API!' : '❌ Connection failed: ' + data.message
+      });
+    } catch (e: any) {
+      toast({ title: 'Test failed', description: e?.message || 'Could not test Cloudflare connection.', variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Card className="bg-gray-800 border-gray-700">
+      <CardHeader>
+        <CardTitle className="text-white">Cloudflare API Configuration</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="bg-blue-900/20 border border-blue-600/30 text-blue-300 text-sm p-4 rounded">
+          <p className="font-semibold mb-2">🌐 Setup Instructions:</p>
+          <ol className="list-decimal list-inside space-y-1">
+            <li>Log in to your <a href="https://dash.cloudflare.com" target="_blank" rel="noopener noreferrer" className="underline">Cloudflare Dashboard</a></li>
+            <li>Go to <strong>My Profile</strong> → <strong>API Tokens</strong></li>
+            <li>Click <strong>Create Token</strong></li>
+            <li>Use the <strong>"Edit zone DNS"</strong> template or custom permissions:</li>
+            <ul className="list-disc list-inside ml-6 mt-1">
+              <li>Zone → DNS → Edit</li>
+              <li>Zone → Zone → Read</li>
+            </ul>
+            <li>Select the zones (domains) you want to manage</li>
+            <li>Copy the generated API token and paste it below</li>
+          </ol>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4">
+          <div>
+            <Label className="text-gray-300">Cloudflare API Token</Label>
+            <Input
+              type="password"
+              value={apiToken}
+              onChange={e => {
+                setApiToken(e.target.value);
+                setSaved(false);
+              }}
+              placeholder="Enter your Cloudflare API token"
+              className="bg-gray-700 border-gray-600 text-white"
+              disabled={loading}
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              This token will be stored securely on the server and used for domain verification.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          <Button onClick={save} className="bg-blue-600 hover:bg-blue-700" disabled={loading}>
+            {saved ? '✅ Saved' : 'Save Token'}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={testConnection}
+            className="border-green-600 text-green-300 hover:bg-green-900/20"
+            disabled={loading || !saved}
+          >
+            Test Connection
+          </Button>
+          <Button
+            variant="outline"
+            onClick={load}
+            className="border-gray-600 text-gray-300 hover:bg-gray-700"
+            disabled={loading}
+          >
+            Reload
+          </Button>
+        </div>
+
+        {saved && (
+          <div className="bg-green-900/20 border border-green-600/30 text-green-300 text-sm p-3 rounded">
+            ✅ Cloudflare is configured! You can now use the <strong>Domain Verification</strong> feature.
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
 
