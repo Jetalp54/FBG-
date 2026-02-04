@@ -3651,10 +3651,12 @@ def get_cf_client():
         logger.info(f"get_cf_client check: File Token exists? {bool(file_token)}, Env Token exists? {bool(env_token)}")
         
         if not token:
-            logger.error("Cloudflare token missing in both file and environment")
+            # Debug info for the user/developer
+            debug_info = f"File: {CLOUDFLARE_CONFIG_FILE}, Exists: {os.path.exists(CLOUDFLARE_CONFIG_FILE)}, FileToken: {bool(file_token)}, EnvToken: {bool(env_token)}"
+            logger.error(f"Cloudflare token missing. Debug: {debug_info}")
             raise HTTPException(
                 status_code=500, 
-                detail="Cloudflare not configured. Please set CLOUDFLARE_API_TOKEN in Settings → Cloudflare"
+                detail=f"Cloudflare not configured. Please set CLOUDFLARE_API_TOKEN in Settings. (Debug: {debug_info})"
             )
         
         # Ensure env var is up to date
