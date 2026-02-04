@@ -655,6 +655,25 @@ fi
 mkdir -p $APP_DIR/uploads
 chown -R $SERVICE_USER:$SERVICE_GROUP $APP_DIR/uploads
 
+# FORCE create app_users.json with 'admin' password to match documentation
+# Hash for 'admin' is 8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918
+print_info "Setting up default admin credentials..."
+cat > $APP_DIR/app_users.json << EOF
+{
+  "users": [
+    {
+      "username": "admin",
+      "password_hash": "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918",
+      "role": "admin",
+      "is_active": true,
+      "email": "admin@firebase-manager.com",
+      "overrides": {}
+    }
+  ]
+}
+EOF
+chown $SERVICE_USER:$SERVICE_GROUP $APP_DIR/app_users.json
+
 # Configure environment based on database success
 print_info "Configuring environment..."
 if [ "$DB_SUCCESS" = true ]; then
