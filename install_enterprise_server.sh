@@ -584,6 +584,67 @@ cd $APP_DIR || {
     exit 1
 }
 
+# Patch Frontend API configuration GLOBALLY
+print_info "Patching ALL frontend API definitions..."
+cat > $APP_DIR/patch_frontend_global.py << 'EOF'
+import os
+import re
+
+# Smart replacement for API_BASE_URL
+# If on localhost, use local port 8000. Otherwise, use relative /api prefix.
+NEW_LOGIC = '(window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:8000" : "/api"'
+
+def patch_frontend_directory(directory):
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if file.endswith((".ts", ".tsx")):
+                patch_file(os.path.join(root, file))
+
+def patch_file(file_path):
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        original_content = content
+        
+        # 1. Standard one-liner replacement
+        pattern = r'const API_BASE_URL = import\.meta\.env\.VITE_API_BASE_URL \|\| [\'"]http://localhost:8000[\'"];'
+        replacement = f'const API_BASE_URL = {NEW_LOGIC};'
+        content = re.sub(pattern, replacement, content)
+        
+        # 2. Patch getApiBaseUrl functions (common in Contexts)
+        if "getApiBaseUrl" in content:
+            # Look for: return `http://${hostname}:8000`; or similar
+            content = re.sub(r'return [`\'"]http://\$\{hostname\}:8000[`\'"];', 'return "/api";', content)
+            content = re.sub(r'return [\'"]http://localhost:8000[\'"];', 'return "/api";', content)
+            
+        # 3. Patch specific fetch calls in LoginPage.tsx if they are hardcoded relative
+        if "LoginPage.tsx" in file_path:
+            # Ensure it uses /api for auth
+            content = content.replace("fetch('/auth/login'", "fetch('/api/auth/login'")
+            content = content.replace("fetch('/auth/forgot-password'", "fetch('/api/auth/forgot-password'")
+
+        # 4. Patch apiClient.ts for relative URLs
+        if "apiClient.ts" in file_path:
+             content = content.replace("this.baseURL = `http://${serverIP}`;", f"this.baseURL = {NEW_LOGIC};")
+             # Handle newer apiClient logic
+             content = re.sub(r'return [`\'"]http://\$\{hostname\}:8000[`\'"];', 'return "/api";', content)
+
+        if content != original_content:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            print(f"Patched: {file_path}")
+            
+    except Exception as e:
+        print(f"Failed to patch {file_path}: {e}")
+
+print("Starting GLOBAL frontend patcher...")
+patch_frontend_directory("src")
+print("GLOBAL frontend patcher complete.")
+EOF
+sudo -u $SERVICE_USER $APP_DIR/venv/bin/python $APP_DIR/patch_frontend_global.py
+rm -f $APP_DIR/patch_frontend_global.py
+
 # Auto-Patch Backend to exclude DB on failure
 print_info "Ensuring backend code is safe for JSON-only mode..."
 cat > $APP_DIR/patch_backend_safe.py << 'EOF'
