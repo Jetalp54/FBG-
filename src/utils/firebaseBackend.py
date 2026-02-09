@@ -1786,7 +1786,12 @@ async def create_campaign(campaign: CampaignCreate, request: Request):
             "failed": 0,
             "errors": [],
             "projectStats": {pid: {"processed": 0, "successful": 0, "failed": 0} for pid in campaign.projectIds},
-            "ownerId": current_user  # Set ownership to current user
+            "ownerId": current_user,  # Set ownership to current user
+            # NEW: Enterprise sending modes
+            "sending_mode": campaign.sending_mode,
+            "turbo_config": campaign.turbo_config,
+            "throttle_config": campaign.throttle_config,
+            "schedule_config": campaign.schedule_config
         }
         
         active_campaigns[campaign_id] = campaign_data
@@ -1874,6 +1879,15 @@ async def update_campaign(campaign_id: str, campaign_update: CampaignUpdate):
         campaign["workers"] = campaign_update.workers
     if campaign_update.template:
         campaign["template"] = campaign_update.template
+    # NEW: Enterprise settings updates
+    if campaign_update.sending_mode:
+        campaign["sending_mode"] = campaign_update.sending_mode
+    if campaign_update.turbo_config:
+        campaign["turbo_config"] = campaign_update.turbo_config
+    if campaign_update.throttle_config:
+        campaign["throttle_config"] = campaign_update.throttle_config
+    if campaign_update.schedule_config:
+        campaign["schedule_config"] = campaign_update.schedule_config
     
     save_campaigns_to_file()
     write_audit_log('admin', 'update_template', {'project_ids': campaign['projectIds'], 'fields_updated': list(campaign_update.dict(exclude_none=True).keys())})
