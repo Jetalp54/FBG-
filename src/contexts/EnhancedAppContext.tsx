@@ -40,6 +40,11 @@ export interface Campaign {
   failed: number;
   errors: string[];
   projectStats: { [projectId: string]: { processed: number; successful: number; failed: number } };
+  // Enterprise features
+  sending_mode?: 'turbo' | 'throttled' | 'scheduled';
+  turbo_config?: any;
+  throttle_config?: any;
+  schedule_config?: any;
 }
 
 export interface DailyCount {
@@ -64,7 +69,7 @@ interface EnhancedAppContextType {
   removeProject: (id: string) => Promise<void>;
   setProjects: React.Dispatch<React.SetStateAction<Project[]>>;
   reloadProjectsAndProfiles: () => Promise<void>;
-  
+
   // Users
   users: { [projectId: string]: User[] };
   loadUsers: (projectId: string) => Promise<void>;
@@ -72,7 +77,7 @@ interface EnhancedAppContextType {
   importUsers: (projectIds: string[], emails: string[]) => Promise<number>;
   bulkDeleteUsers: (projectIds: string[], userIds?: string[]) => Promise<void>;
   refreshAllUsers: () => Promise<void>;
-  
+
   // Campaigns
   campaigns: Campaign[];
   currentCampaign: Campaign | null;
@@ -82,15 +87,15 @@ interface EnhancedAppContextType {
   startCampaign: (campaignId: string) => Promise<void>;
   pauseCampaign: (campaignId: string) => Promise<void>;
   resumeCampaign: (campaignId: string) => Promise<void>;
-  
+
   // Daily counts
   dailyCounts: { [key: string]: DailyCount };
   getDailyCount: (projectId: string) => number;
-  
+
   // Loading states
   loading: boolean;
   setLoading: (loading: boolean) => void;
-  
+
   // Profiles
   profiles: Profile[];
   activeProfile?: string;
@@ -110,15 +115,15 @@ const getApiBaseUrl = () => {
   if (import.meta.env.VITE_API_BASE_URL) {
     return import.meta.env.VITE_API_BASE_URL;
   }
-  
+
   // Check if we're running locally or on server
   const hostname = window.location.hostname;
-  
+
   // If localhost or 127.0.0.1, use localhost
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return "/api";
   }
-  
+
   // Otherwise, use the current hostname with port 8000
   return "/api";
 };
@@ -135,7 +140,7 @@ function filterValidProjects(projects: any[]) {
 
 export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { toast } = useToast();
-  
+
   // State
   const [projects, setProjects] = useState<Project[]>([]);
   const [users, setUsers] = useState<{ [projectId: string]: User[] }>({});
@@ -151,10 +156,10 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
     try {
       const url = `${API_BASE_URL}${endpoint}`;
       console.log(`apiCall: Making request to ${url}`, { method: options.method || 'GET', body: options.body });
-      
+
       // Get current username for user ownership
       const currentUsername = localStorage.getItem('app-username') || 'admin';
-      
+
       const response = await fetch(url, {
         headers: {
           'Content-Type': 'application/json',
@@ -163,15 +168,15 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
         },
         ...options,
       });
-      
+
       console.log(`apiCall: Response status for ${endpoint}:`, response.status);
-      
+
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`apiCall: HTTP error for ${endpoint}:`, response.status, errorText);
         throw new Error(`API call failed: ${response.status} - ${errorText}`);
       }
-      
+
       const data = await response.json();
       console.log(`apiCall: Success response for ${endpoint}:`, data);
       return data;
@@ -186,7 +191,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setLoading(true);
     try {
       console.log('fetchAllData: Starting data fetch...');
-      
+
       // 1. Projects
       try {
         const backendProjects = await apiCall('/projects', { method: 'GET' });
@@ -201,11 +206,11 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
         console.error('fetchAllData: Failed to load projects:', error);
         setProjects([]);
       }
-      
+
       // 2. Users (on-demand only)
       // Do not preload all users on startup to avoid massive payloads for 1K+ projects
       setUsers({});
-      
+
       // 3. Profiles
       try {
         const backendProfiles = await apiCall('/profiles', { method: 'GET' });
@@ -219,7 +224,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
         console.error('fetchAllData: Failed to load profiles:', error);
         setProfiles([]);
       }
-      
+
       // 4. Campaigns
       try {
         const responseCampaigns = await apiCall('/campaigns', { method: 'GET' });
@@ -228,7 +233,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
         console.error('fetchAllData: Failed to load campaigns:', error);
         setCampaigns([]);
       }
-      
+
       // 5. Daily counts
       try {
         const responseDailyCounts = await apiCall('/daily-counts', { method: 'GET' });
@@ -237,7 +242,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
         console.error('fetchAllData: Failed to load daily counts:', error);
         setDailyCounts({});
       }
-      
+
       console.log('fetchAllData: Data fetch completed successfully');
     } catch (error) {
       console.error('fetchAllData: Error:', error);
@@ -311,12 +316,12 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
         headers: { 'Content-Type': 'application/json' },
       });
       console.log('bulkRemoveProjects: Backend response:', response);
-      
+
       // Force a complete data refresh
       console.log('bulkRemoveProjects: Refreshing data...');
       await fetchAllData();
       console.log('bulkRemoveProjects: Data refresh completed');
-      
+
       toast({ title: 'Projects Removed', description: `${ids.length} project(s) deleted successfully.` });
     } catch (error) {
       console.error('bulkRemoveProjects: Error:', error);
@@ -328,7 +333,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   // CRUD: Users
   // Paginated loader
-  const projectToNextToken = useRef<{[projectId: string]: string | null}>({});
+  const projectToNextToken = useRef<{ [projectId: string]: string | null }>({});
   const loadUsers = async (projectId: string) => {
     try {
       const response = await apiCall(`/projects/${projectId}/users?limit=500`);
@@ -362,16 +367,16 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
           userIds: userIds || null  // null means delete all users
         }),
       });
-      
+
       if (response.success) {
         // Reload users for affected projects
         await Promise.all(projectIds.map(id => loadUsers(id)));
-        
+
         toast({
           title: "Users Deleted",
           description: response.message || `Successfully deleted ${response.total_deleted || 'users'}`,
         });
-        
+
         return response;
       } else {
         throw new Error(response.error || 'Failed to delete users');
@@ -392,21 +397,21 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setLoading(true);
     try {
       console.log('addProfile: Starting profile creation with data:', profileData);
-      
+
       const profileWithDefaults = {
         ...profileData,
         description: profileData.description || '',
       };
-      
+
       console.log('addProfile: Making API call to /profiles with data:', profileWithDefaults);
-      
+
       const response = await apiCall('/profiles', {
         method: 'POST',
         body: JSON.stringify(profileWithDefaults),
       });
-      
+
       console.log('addProfile: Backend response:', response);
-      
+
       await fetchAllData();
       toast({ title: 'Profile Added', description: `${profileData.name} added successfully.` });
     } catch (error) {
@@ -418,7 +423,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
   // Remove profile: unlink all associated projects
   const removeProfile = async (profileId: string) => {
-      setLoading(true);
+    setLoading(true);
     try {
       // Unlink all projects from this profile
       const projectsToUnlink = projects.filter(p => p.profileId === profileId);
@@ -426,7 +431,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
         await apiCall(`/projects/${project.id}`, {
           method: 'PUT',
           body: JSON.stringify({ profileId: undefined }),
-      });
+        });
       }
       // Remove profile from backend
       await apiCall(`/profiles/${profileId}`, { method: 'DELETE' });
@@ -476,10 +481,10 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
         method: 'POST',
         body: JSON.stringify(campaignData),
       });
-      
+
       if (response.success) {
         setCampaigns(prev => [response.campaign, ...prev]);
-        
+
         toast({
           title: "Campaign Created",
           description: `Campaign "${campaignData.name}" has been created successfully.`,
@@ -501,10 +506,10 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
         method: 'PUT',
         body: JSON.stringify(updates),
       });
-      
+
       if (response.success) {
         setCampaigns(prev => prev.map(c => c.id === campaignId ? response.campaign : c));
-        
+
         toast({
           title: "Campaign Updated",
           description: "Campaign has been updated successfully.",
@@ -524,11 +529,11 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
     try {
       await apiCall(`/campaigns/${campaignId}`, { method: 'DELETE' });
       setCampaigns(prev => prev.filter(c => c.id !== campaignId));
-      
+
       if (currentCampaign?.id === campaignId) {
         setCurrentCampaign(null);
       }
-      
+
       toast({
         title: "Campaign Deleted",
         description: "Campaign has been deleted successfully.",
@@ -551,32 +556,32 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
 
       console.log(`Starting campaign with ${campaign.workers} workers and batch size ${campaign.batchSize}`);
-      
-      const response = await apiCall(`/campaigns/${campaignId}/start`, { 
+
+      const response = await apiCall(`/campaigns/${campaignId}/start`, {
         method: 'POST',
         body: JSON.stringify({
           workers: campaign.workers,
           batchSize: campaign.batchSize
         })
       });
-      
+
       if (response.success) {
         // Update campaign status
-        setCampaigns(prev => prev.map(c => 
-          c.id === campaignId 
+        setCampaigns(prev => prev.map(c =>
+          c.id === campaignId
             ? { ...c, status: 'running' as const, startedAt: new Date().toISOString() }
             : c
         ));
-        
+
         setCurrentCampaign({ ...campaign, status: 'running', startedAt: new Date().toISOString() });
-        
+
         // Monitor campaign progress
         const progressInterval = setInterval(async () => {
           try {
             const progressResponse = await apiCall(`/campaigns/${campaignId}`);
             setCampaigns(prev => prev.map(c => c.id === campaignId ? progressResponse : c));
             setCurrentCampaign(progressResponse);
-            
+
             if (progressResponse.status === 'completed' || progressResponse.status === 'failed') {
               clearInterval(progressInterval);
               setCurrentCampaign(null);
@@ -586,7 +591,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
             clearInterval(progressInterval);
           }
         }, 2000);
-        
+
         toast({
           title: "Campaign Started",
           description: `Password reset campaign is running with ${campaign.workers} workers and batch size ${campaign.batchSize}.`,
@@ -617,7 +622,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
     try {
       const response = await apiCall(`/campaigns/${campaignId}`);
       setCampaigns(prev => prev.map(c => c.id === campaignId ? response : c));
-      
+
       if (currentCampaign?.id === campaignId) {
         setCurrentCampaign(response);
       }
@@ -675,9 +680,9 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
           projectStats,
         };
       });
-      } catch (error) {
+    } catch (error) {
       return campaigns;
-      }
+    }
   };
 
   // On app load, after loading projects, load all users in the background
@@ -730,15 +735,15 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
         retryAttempts = 0;
         if (heartbeat) window.clearInterval(heartbeat);
         heartbeat = window.setInterval(() => {
-          try { ws?.send('ping'); } catch {}
+          try { ws?.send('ping'); } catch { }
         }, 30000);
       };
 
       ws.onmessage = async (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (!msg.event) return;
-        switch (msg.event) {
+        try {
+          const msg = JSON.parse(event.data);
+          if (!msg.event) return;
+          switch (msg.event) {
             case 'permissions_updated':
             case 'roles_updated': {
               const username = localStorage.getItem('app-username') || '';
@@ -749,61 +754,61 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
                     const data = await res.json();
                     localStorage.setItem('app-role', data.role || 'member');
                     // Always set a complete permissions object with all known keys
-                    const known = ['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'];
+                    const known = ['projects', 'users', 'campaigns', 'templates', 'ai', 'test', 'profiles', 'auditLogs', 'settings', 'smtp'];
                     const normalized: any = {};
                     known.forEach(k => { normalized[k] = !!(data.permissions && data.permissions[k]); });
                     localStorage.setItem('app-permissions', JSON.stringify(normalized));
                     window.dispatchEvent(new Event('storage'));
                   }
-                } catch {}
+                } catch { }
               }
               break;
             }
-          case 'import_users':
-            toast({
-              title: 'Users Imported (Real-Time)',
-              description: `Imported ${msg.data.total_imported} users across ${msg.data.project_ids.length} projects.`
-            });
-            await Promise.all(msg.data.project_ids.map((id: string) => loadUsers(id)));
-            break;
-          case 'bulk_delete_users':
-            toast({
-              title: 'Users Deleted (Real-Time)',
-              description: `Deleted ${msg.data.total_deleted} users across ${msg.data.project_ids.length} projects.`
-            });
-            await Promise.all(msg.data.project_ids.map((id: string) => loadUsers(id)));
-            break;
-          case 'move_users':
-            toast({
-              title: 'Users Moved (Real-Time)',
-              description: `Moved users from ${msg.data.from_project} to ${msg.data.to_project}.`
-            });
-            await loadUsers(msg.data.from_project);
-            await loadUsers(msg.data.to_project);
-            break;
-          case 'copy_users':
-            toast({
-              title: 'Users Copied (Real-Time)',
-              description: `Copied users from ${msg.data.from_project} to ${msg.data.to_project}.`
-            });
-            await loadUsers(msg.data.from_project);
-            await loadUsers(msg.data.to_project);
-            break;
-          case 'delete_project':
-            toast({
-              title: 'Project Deleted (Real-Time)',
-              description: `Project ${msg.data.project_id} has been deleted.`
-            });
-            // Reload project list
-            const response = await apiCall('/projects');
-            setProjects(response.projects);
-            break;
-          default:
-            break;
+            case 'import_users':
+              toast({
+                title: 'Users Imported (Real-Time)',
+                description: `Imported ${msg.data.total_imported} users across ${msg.data.project_ids.length} projects.`
+              });
+              await Promise.all(msg.data.project_ids.map((id: string) => loadUsers(id)));
+              break;
+            case 'bulk_delete_users':
+              toast({
+                title: 'Users Deleted (Real-Time)',
+                description: `Deleted ${msg.data.total_deleted} users across ${msg.data.project_ids.length} projects.`
+              });
+              await Promise.all(msg.data.project_ids.map((id: string) => loadUsers(id)));
+              break;
+            case 'move_users':
+              toast({
+                title: 'Users Moved (Real-Time)',
+                description: `Moved users from ${msg.data.from_project} to ${msg.data.to_project}.`
+              });
+              await loadUsers(msg.data.from_project);
+              await loadUsers(msg.data.to_project);
+              break;
+            case 'copy_users':
+              toast({
+                title: 'Users Copied (Real-Time)',
+                description: `Copied users from ${msg.data.from_project} to ${msg.data.to_project}.`
+              });
+              await loadUsers(msg.data.from_project);
+              await loadUsers(msg.data.to_project);
+              break;
+            case 'delete_project':
+              toast({
+                title: 'Project Deleted (Real-Time)',
+                description: `Project ${msg.data.project_id} has been deleted.`
+              });
+              // Reload project list
+              const response = await apiCall('/projects');
+              setProjects(response.projects);
+              break;
+            default:
+              break;
+          }
+        } catch (e) {
+          // Ignore parse errors
         }
-      } catch (e) {
-        // Ignore parse errors
-      }
       };
 
       ws.onclose = () => {
@@ -815,7 +820,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
       };
 
       ws.onerror = () => {
-        try { ws?.close(); } catch {}
+        try { ws?.close(); } catch { }
       };
     };
 
@@ -823,7 +828,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     return () => {
       if (heartbeat) { window.clearInterval(heartbeat); heartbeat = null; }
-      try { ws?.close(); } catch {}
+      try { ws?.close(); } catch { }
     };
   }, []);
 
@@ -844,7 +849,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
     removeProject,
     setProjects: setProjectsSafe,
     reloadProjectsAndProfiles,
-    
+
     // Users
     users,
     loadUsers,
@@ -856,16 +861,16 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
           method: 'POST',
           body: JSON.stringify({ emails, projectIds }),
         });
-        
+
         if (response.success) {
           // Reload users for affected projects
           await Promise.all(projectIds.map(id => loadUsers(id)));
-          
+
           toast({
             title: "Import Successful",
             description: `Successfully imported ${response.total_imported} users across ${projectIds.length} projects.`,
           });
-          
+
           return response.total_imported;
         }
         return 0;
@@ -884,7 +889,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
     refreshAllUsers: async () => {
       // This function is no longer needed as users are loaded directly
     },
-    
+
     // Campaigns
     campaigns,
     currentCampaign,
@@ -894,15 +899,15 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
     startCampaign,
     pauseCampaign,
     resumeCampaign,
-    
+
     // Daily counts
     dailyCounts,
     getDailyCount,
-    
+
     // Loading
     loading,
     setLoading,
-    
+
     // Profiles
     profiles,
     activeProfile,

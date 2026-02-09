@@ -589,24 +589,21 @@ export const EnhancedCampaignsPage = () => {
                           {campaign.status}
                         </Badge>
                         {campaign.status === 'pending' && (
-                          <>
-                            <Button
-                              size="sm"
-                              onClick={() => handleSendCampaign(campaign, false)}
-                              className="bg-blue-600 hover:bg-blue-700"
-                            >
-                              <Play className="w-4 h-4 mr-1" />
-                              Start
-                            </Button>
-                            <Button
-                              size="sm"
-                              onClick={() => handleSendCampaign(campaign, true)}
-                              className="bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-700 hover:to-orange-700"
-                            >
-                              <Rocket className="w-4 h-4 mr-1" />
-                              Lightning
-                            </Button>
-                          </>
+                          <Button
+                            size="sm"
+                            onClick={() => handleSendCampaign(campaign)}
+                            className={`${campaign.sending_mode === 'throttled' ? 'bg-blue-600 hover:bg-blue-700' :
+                                campaign.sending_mode === 'scheduled' ? 'bg-purple-600 hover:bg-purple-700' :
+                                  'bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-700 hover:to-orange-700'
+                              }`}
+                          >
+                            {campaign.sending_mode === 'throttled' ? <Play className="w-4 h-4 mr-1" /> :
+                              campaign.sending_mode === 'scheduled' ? <Clock className="w-4 h-4 mr-1" /> :
+                                <Rocket className="w-4 h-4 mr-1" />}
+                            {campaign.sending_mode === 'throttled' ? 'Start Throttled' :
+                              campaign.sending_mode === 'scheduled' ? 'Enable Schedule' :
+                                'Start Turbo'}
+                          </Button>
                         )}
                         <Button
                           size="sm"
