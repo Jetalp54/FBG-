@@ -204,65 +204,7 @@ export const EnhancedCampaignsPage = () => {
     }
   };
 
-  const handleCreateCampaign = async () => {
-    if (!campaignName.trim()) {
-      toast({
-        title: "Error",
-        description: "Campaign name is required.",
-        variant: "destructive",
-      });
-      return;
-    }
 
-    if (selectedProjects.length === 0) {
-      toast({
-        title: "Error",
-        description: "Please select at least one project.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const totalUsers = Object.values(selectedUsers).reduce((sum, userIds) => sum + userIds.length, 0);
-    if (totalUsers === 0) {
-      toast({
-        title: "Error",
-        description: "Please select at least one user.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    try {
-      const newCampaign = await createCampaign({
-        name: campaignName,
-        projectIds: selectedProjects,
-        selectedUsers,
-        batchSize,
-        workers,
-        status: 'pending',
-        // NEW: Include sending mode configuration
-        sending_mode: sendingMode.mode,
-        turbo_config: sendingMode.turbo_config,
-        throttle_config: sendingMode.throttle_config,
-        schedule_config: sendingMode.schedule_config
-      });
-
-      // Reset form
-      setCampaignName('');
-      setSelectedProjects([]);
-      setSelectedUsers({});
-      setSelectedProfile('');
-      setBatchSize(50);
-      setWorkers(5);
-      setSendingMode({ mode: 'turbo', turbo_config: { auto: true } });
-      setShowCreateDialog(false);
-
-      // Add new campaign to the top of the campaigns list
-    } catch (error) {
-      console.error('Failed to create campaign:', error);
-    }
-  };
 
   const getTotalSelectedUsers = () => {
     return Object.values(selectedUsers).reduce((sum, userIds) => sum + userIds.length, 0);
@@ -443,34 +385,58 @@ export const EnhancedCampaignsPage = () => {
   };
 
   const handleSaveCampaign = async () => {
-    if (editingCampaign) {
-      await updateCampaign(editingCampaign.id, {
-        name: campaignName,
-        projectIds: [...selectedProjects],
-        selectedUsers,
-        batchSize,
-        workers,
-        faster_mode: fasterMode,
-      });
-    } else {
-      await createCampaign({
-        name: campaignName,
-        projectIds: selectedProjects,
-        selectedUsers,
-        batchSize,
-        workers,
-        faster_mode: fasterMode,
-        status: 'pending'
-      });
+    // Validation
+    if (!campaignName.trim()) {
+      toast({ title: "Error", description: "Campaign name is required.", variant: "destructive" });
+      return;
     }
-    setShowCreateDialog(false);
-    setEditingCampaign(null);
-    setCampaignName('');
-    setSelectedProjects([]);
-    setSelectedUsers({});
-    setBatchSize(50);
-    setWorkers(5);
-    setFasterMode(false);
+    if (selectedProjects.length === 0) {
+      toast({ title: "Error", description: "Please select at least one project.", variant: "destructive" });
+      return;
+    }
+    const totalUsers = Object.values(selectedUsers).reduce((sum, userIds) => sum + userIds.length, 0);
+    if (totalUsers === 0) {
+      toast({ title: "Error", description: "Please select at least one user.", variant: "destructive" });
+      return;
+    }
+
+    const campaignData: any = {
+      name: campaignName,
+      projectIds: selectedProjects,
+      selectedUsers,
+      batchSize,
+      workers,
+      // Sending mode configuration
+      sending_mode: sendingMode.mode,
+      turbo_config: sendingMode.turbo_config,
+      throttle_config: sendingMode.throttle_config,
+      schedule_config: sendingMode.schedule_config
+    };
+
+    try {
+      if (editingCampaign) {
+        await updateCampaign(editingCampaign.id, campaignData);
+        toast({ title: 'Success', description: 'Campaign updated successfully.' });
+      } else {
+        campaignData.status = 'pending';
+        await createCampaign(campaignData);
+        toast({ title: 'Success', description: 'Campaign created successfully.' });
+      }
+
+      // Cleanup
+      setShowCreateDialog(false);
+      setEditingCampaign(null);
+      setCampaignName('');
+      setSelectedProjects([]);
+      setSelectedUsers({});
+      setSelectedProfile('');
+      setBatchSize(50);
+      setWorkers(5);
+      setSendingMode({ mode: 'turbo', turbo_config: { auto: true } });
+    } catch (error) {
+      console.error('Failed to save campaign:', error);
+      toast({ title: 'Error', description: 'Failed to save campaign.', variant: 'destructive' });
+    }
   };
 
   const handleDuplicateCampaign = (campaign: any) => {
