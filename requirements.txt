@@ -39,5 +39,8 @@ alembic
 # Production Server
 gunicorn
 
+# Scheduling (for scheduled campaigns)
+apscheduler
+
 # Additional Python utilities
 # (concurrent.futures is built into Python 3) 

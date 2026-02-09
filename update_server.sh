@@ -25,7 +25,7 @@ chown -R $SERVICE_USER:$SERVICE_USER $APP_DIR
 # 3. Update Dependencies
 echo -e "${BLUE}📦 Updating dependencies...${NC}"
 cd $APP_DIR
-# Python
+# Python (includes APScheduler for enterprise scheduled campaigns)
 sudo -u $SERVICE_USER ./venv/bin/pip install -r requirements.txt
 # Node
 sudo -u $SERVICE_USER npm install
