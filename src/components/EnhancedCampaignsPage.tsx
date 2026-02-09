@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { useEnhancedApp } from '@/contexts/EnhancedAppContext';
-import { 
-  Zap, 
-  Plus, 
-  Play, 
-  Pause, 
-  Trash2, 
-  Users, 
-  Settings, 
+import {
+  Zap,
+  Plus,
+  Play,
+  Pause,
+  Trash2,
+  Users,
+  Settings,
   Mail,
   FolderOpen,
   Rocket,
@@ -18,6 +18,7 @@ import {
   Edit2,
   Copy
 } from 'lucide-react';
+import { SendingModeSelector, SendingModeConfig } from './SendingModeSelector';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,15 +35,15 @@ import { Dialog as ConfirmDialog, DialogContent as ConfirmDialogContent, DialogH
 const API_BASE_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:8000" : "/api";
 
 export const EnhancedCampaignsPage = () => {
-  const { 
-    campaigns, 
-    projects, 
+  const {
+    campaigns,
+    projects,
     profiles,
-    users, 
+    users,
     activeProfile,
     currentCampaign,
-    createCampaign, 
-    deleteCampaign, 
+    createCampaign,
+    deleteCampaign,
     loadUsers,
     updateCampaign,
     loadCampaigns,
@@ -57,10 +58,15 @@ export const EnhancedCampaignsPage = () => {
   const [campaignName, setCampaignName] = useState('');
   const [batchSize, setBatchSize] = useState(50);
   const [workers, setWorkers] = useState(5);
-  const [loadingUsers, setLoadingUsers] = useState<{[key: string]: boolean}>({});
-  const [fasterMode, setFasterMode] = useState(false);
+  const [loadingUsers, setLoadingUsers] = useState<{ [key: string]: boolean }>({});
+
+  // NEW: Sending mode configuration
+  const [sendingMode, setSendingMode] = useState<SendingModeConfig>({
+    mode: 'turbo',
+    turbo_config: { auto: true }
+  });
   const [selectedCampaigns, setSelectedCampaigns] = useState<string[]>([]);
-  
+
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -88,7 +94,7 @@ export const EnhancedCampaignsPage = () => {
       try {
         const response = await fetch(`${API_BASE_URL}/campaigns?page=${currentPage}&limit=${campaignsPerPage}`);
         const data = await response.json();
-        
+
         if (response.ok) {
           // Update campaigns in context
           if (data.campaigns) {
@@ -98,7 +104,7 @@ export const EnhancedCampaignsPage = () => {
               // Update campaign in context if needed
             });
           }
-          
+
           // Update pagination info
           if (data.pagination) {
             setTotalPages(data.pagination.total_pages);
@@ -114,7 +120,7 @@ export const EnhancedCampaignsPage = () => {
   }, [currentPage, campaignsPerPage]);
 
   // Filter projects by selected profile
-  const profileProjects = selectedProfile 
+  const profileProjects = selectedProfile
     ? projects.filter(p => p.profileId === selectedProfile && p.status === 'active')
     : [];
 
@@ -159,7 +165,7 @@ export const EnhancedCampaignsPage = () => {
       const newSelected = prev.includes(projectId)
         ? prev.filter(id => id !== projectId)
         : [...prev, projectId];
-      
+
       // Clear selected users for removed projects
       if (!newSelected.includes(projectId)) {
         setSelectedUsers(prev => {
@@ -168,7 +174,7 @@ export const EnhancedCampaignsPage = () => {
           return newUsers;
         });
       }
-      
+
       return newSelected;
     });
   };
@@ -185,15 +191,15 @@ export const EnhancedCampaignsPage = () => {
   const handleSelectAllUsers = (projectId: string) => {
     const projectUsers = users[projectId] || [];
     const currentSelected = selectedUsers[projectId] || [];
-    
+
     if (currentSelected.length === projectUsers.length) {
       // Deselect all
       setSelectedUsers(prev => ({ ...prev, [projectId]: [] }));
     } else {
       // Select all
-      setSelectedUsers(prev => ({ 
-        ...prev, 
-        [projectId]: projectUsers.map(u => u.uid) 
+      setSelectedUsers(prev => ({
+        ...prev,
+        [projectId]: projectUsers.map(u => u.uid)
       }));
     }
   };
@@ -234,8 +240,12 @@ export const EnhancedCampaignsPage = () => {
         selectedUsers,
         batchSize,
         workers,
-        faster_mode: fasterMode,
-        status: 'pending'
+        status: 'pending',
+        // NEW: Include sending mode configuration
+        sending_mode: sendingMode.mode,
+        turbo_config: sendingMode.turbo_config,
+        throttle_config: sendingMode.throttle_config,
+        schedule_config: sendingMode.schedule_config
       });
 
       // Reset form
@@ -245,7 +255,7 @@ export const EnhancedCampaignsPage = () => {
       setSelectedProfile('');
       setBatchSize(50);
       setWorkers(5);
-      setFasterMode(false);
+      setSendingMode({ mode: 'turbo', turbo_config: { auto: true } });
       setShowCreateDialog(false);
 
       // Add new campaign to the top of the campaigns list
@@ -330,7 +340,13 @@ export const EnhancedCampaignsPage = () => {
     setSelectedUsers({ ...campaign.selectedUsers });
     setBatchSize(campaign.batchSize);
     setWorkers(campaign.workers);
-    setFasterMode(!!campaign.faster_mode);
+    // Load sending mode configuration
+    setSendingMode({
+      mode: campaign.sending_mode || 'turbo',
+      turbo_config: campaign.turbo_config,
+      throttle_config: campaign.throttle_config,
+      schedule_config: campaign.schedule_config
+    });
     setShowCreateDialog(true);
   };
 
@@ -351,47 +367,69 @@ export const EnhancedCampaignsPage = () => {
   const handleSendCampaign = async (campaign: any, isLightning = false) => {
     console.log('EnhancedCampaignsPage: handleSendCampaign called');
     console.log('EnhancedCampaignsPage: campaign =', campaign);
-    console.log('EnhancedCampaignsPage: isLightning =', isLightning);
+    console.log('EnhancedCampaignsPage: sending mode =', campaign.sending_mode);
     console.log('EnhancedCampaignsPage: API_BASE_URL =', API_BASE_URL);
-    
+
     try {
       const projects = campaign.projectIds.map((projectId: string) => ({
         projectId,
         userIds: campaign.selectedUsers[projectId] || []
       }));
-      
-      const requestBody = {
+
+      // NEW: Build request with sending mode configuration
+      const requestBody: any = {
         projects,
-        lightning: isLightning,
-        workers: campaign.workers,
-        batchSize: campaign.batchSize,
-        campaignId: campaign.id
+        campaignId: campaign.id,
+        sending_mode: campaign.sending_mode || (isLightning ? 'turbo' : 'turbo'),
       };
-      
+
+      // Add mode-specific configurations
+      if (campaign.sending_mode === 'turbo' || isLightning) {
+        requestBody.sending_mode = 'turbo';
+        requestBody.turbo_config = campaign.turbo_config || { auto: true };
+      } else if (campaign.sending_mode === 'throttled') {
+        requestBody.throttle_config = campaign.throttle_config || {
+          emails_per_ms: 0.01,  // 10 emails/second default
+          burst_capacity: 50,
+          workers: 5
+        };
+      } else if (campaign.sending_mode === 'scheduled') {
+        requestBody.schedule_config = campaign.schedule_config || {
+          scheduled_datetime: new Date(Date.now() + 3600000).toISOString(),  // 1 hour from now
+          timezone: 'UTC',
+          execution_mode: 'turbo'
+        };
+      }
+
       console.log('EnhancedCampaignsPage: Request body =', requestBody);
       console.log('EnhancedCampaignsPage: Making fetch request to:', `${API_BASE_URL}/campaigns/send`);
-      
+
       const response = await fetch(`${API_BASE_URL}/campaigns/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody)
       });
-      
+
       console.log('EnhancedCampaignsPage: Response status =', response.status);
       console.log('EnhancedCampaignsPage: Response ok =', response.ok);
-      
+
       if (!response.ok) {
         const errorText = await response.text();
         console.log('EnhancedCampaignsPage: Error response text =', errorText);
         throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
-      
+
       const responseData = await response.json();
       console.log('EnhancedCampaignsPage: Response data =', responseData);
-      
+
+      const modeLabel =
+        requestBody.sending_mode === 'turbo' ? 'Turbo' :
+          requestBody.sending_mode === 'throttled' ? 'Throttled' :
+            requestBody.sending_mode === 'scheduled' ? 'Scheduled' : 'Normal';
+
       toast({
         title: 'Campaign Started',
-        description: `Campaign "${campaign.name}" has started${isLightning ? ' in Lightning mode' : ''}.`,
+        description: `Campaign "${campaign.name}" has started in ${modeLabel} mode.`,
       });
       startPollingCampaigns(); // Start polling after send
     } catch (error) {
@@ -577,12 +615,11 @@ export const EnhancedCampaignsPage = () => {
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        <Badge className={`${
-                          campaign.status === 'completed' ? 'bg-green-500/20 text-green-400' :
+                        <Badge className={`${campaign.status === 'completed' ? 'bg-green-500/20 text-green-400' :
                           campaign.status === 'running' ? 'bg-blue-500/20 text-blue-400' :
-                          campaign.status === 'failed' ? 'bg-red-500/20 text-red-400' :
-                          'bg-gray-500/20 text-gray-400'
-                        }`}>
+                            campaign.status === 'failed' ? 'bg-red-500/20 text-red-400' :
+                              'bg-gray-500/20 text-gray-400'
+                          }`}>
                           {campaign.status}
                         </Badge>
                         {campaign.status === 'pending' && (
@@ -620,15 +657,15 @@ export const EnhancedCampaignsPage = () => {
                         </Button>
                       </div>
                     </div>
-                    
+
                     {/* Progress Bar */}
                     <div className="space-y-2">
                       <div className="flex justify-between text-sm text-gray-400">
                         <span>Progress: {campaign.processed} / {Object.values(campaign.selectedUsers).reduce((sum, users) => sum + users.length, 0)}</span>
                         <span>{campaign.successful} successful • {campaign.failed} failed</span>
                       </div>
-                      <Progress 
-                        value={(campaign.processed / Object.values(campaign.selectedUsers).reduce((sum, users) => sum + users.length, 0)) * 100} 
+                      <Progress
+                        value={(campaign.processed / Object.values(campaign.selectedUsers).reduce((sum, users) => sum + users.length, 0)) * 100}
                         className="h-2"
                       />
                     </div>
@@ -642,7 +679,7 @@ export const EnhancedCampaignsPage = () => {
                   </div>
                 ))}
               </div>
-              
+
               {/* Pagination Controls */}
               {totalPages > 1 && (
                 <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-700">
@@ -659,7 +696,7 @@ export const EnhancedCampaignsPage = () => {
                     >
                       Previous
                     </Button>
-                    
+
                     <div className="flex items-center gap-1">
                       {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
                         let pageNum;
@@ -672,15 +709,15 @@ export const EnhancedCampaignsPage = () => {
                         } else {
                           pageNum = currentPage - 2 + i;
                         }
-                        
+
                         return (
                           <Button
                             key={pageNum}
                             size="sm"
                             variant={currentPage === pageNum ? "default" : "outline"}
                             onClick={() => setCurrentPage(pageNum)}
-                            className={currentPage === pageNum 
-                              ? "bg-blue-600 hover:bg-blue-700" 
+                            className={currentPage === pageNum
+                              ? "bg-blue-600 hover:bg-blue-700"
                               : "border-gray-600 text-gray-300 hover:bg-gray-700"
                             }
                           >
@@ -689,7 +726,7 @@ export const EnhancedCampaignsPage = () => {
                         );
                       })}
                     </div>
-                    
+
                     <Button
                       size="sm"
                       variant="outline"
@@ -757,9 +794,9 @@ export const EnhancedCampaignsPage = () => {
               <div>
                 <Label className="text-gray-300">Select Projects ({selectedProjects.length} selected)</Label>
                 <div className="flex items-center gap-2 mb-2">
-                  <Button 
-                    size="sm" 
-                    variant="outline" 
+                  <Button
+                    size="sm"
+                    variant="outline"
                     onClick={() => {
                       if (selectedProjects.length === profileProjects.length) {
                         // Deselect all
@@ -811,7 +848,7 @@ export const EnhancedCampaignsPage = () => {
                     const projectUsers = users[projectId] || [];
                     const selectedCount = selectedUsers[projectId]?.length || 0;
                     const isLoading = loadingUsers[projectId];
-                    
+
                     return (
                       <div key={projectId} className="bg-gray-700 rounded-lg p-3">
                         <div className="flex items-center justify-between mb-2">
@@ -820,7 +857,7 @@ export const EnhancedCampaignsPage = () => {
                         <div className="text-sm text-gray-400 mb-2">
                           {isLoading ? 'Loading users...' : `${selectedCount} of ${projectUsers.length} users selected`}
                         </div>
-                        
+
                         {isLoading ? (
                           <div className="flex items-center justify-center py-4">
                             <div className="animate-spin w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full mr-2" />
@@ -836,8 +873,8 @@ export const EnhancedCampaignsPage = () => {
                                   onCheckedChange={() => handleUserToggle(projectId, user.uid)}
                                   className="border-gray-500"
                                 />
-                                <Label 
-                                  htmlFor={`${projectId}-${user.uid}`} 
+                                <Label
+                                  htmlFor={`${projectId}-${user.uid}`}
                                   className="text-white text-sm cursor-pointer truncate"
                                 >
                                   {user.email}
@@ -853,38 +890,8 @@ export const EnhancedCampaignsPage = () => {
               </div>
             )}
 
-            {/* Campaign Settings */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="batchSize" className="text-gray-300">Batch Size</Label>
-                <Input
-                  id="batchSize"
-                  type="number"
-                  value={batchSize}
-                  onChange={(e) => setBatchSize(Number(e.target.value))}
-                  min="1"
-                  max="100"
-                  className="bg-gray-700 border-gray-600 text-white"
-                />
-              </div>
-              <div>
-                <Label htmlFor="workers" className="text-gray-300">Workers</Label>
-                <Input
-                  id="workers"
-                  type="number"
-                  value={workers}
-                  onChange={(e) => setWorkers(Number(e.target.value))}
-                  min="1"
-                  max="55"
-                  className="bg-gray-700 border-gray-600 text-white"
-                  disabled={fasterMode}
-                />
-              </div>
-            </div>
-            <div className="flex items-center gap-2 mt-2">
-              <Checkbox id="fasterMode" checked={fasterMode} onCheckedChange={checked => setFasterMode(checked === true)} />
-              <Label htmlFor="fasterMode" className="text-gray-300 cursor-pointer">Faster Mode (Use All CPU Cores)</Label>
-            </div>
+            {/* Sending Mode Selector - Enterprise Feature */}
+            <SendingModeSelector value={sendingMode} onChange={setSendingMode} />
 
             {/* Actions */}
             <div className="flex gap-2">

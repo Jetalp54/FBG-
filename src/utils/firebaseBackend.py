@@ -184,6 +184,18 @@ import secrets
 from fastapi.responses import JSONResponse
 from fastapi import Response
 
+# Advanced scheduling support
+try:
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.date import DateTrigger
+    SCHEDULER_AVAILABLE = True
+    logger_temp = logging.getLogger(__name__)
+    logger_temp.info("✅ APScheduler imported successfully")
+except ImportError:
+    SCHEDULER_AVAILABLE = False
+    logger_temp = logging.getLogger(__name__)
+    logger_temp.warning("⚠️ APScheduler not available - scheduled campaigns disabled")
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -196,6 +208,88 @@ logger.info(f"Use Database: {os.getenv('USE_DATABASE', 'false')}")
 # Log Google Cloud availability
 if not GOOGLE_CLOUD_AVAILABLE:
     logger.warning("Google Cloud libraries not available. Project deletion from Google Cloud will not work.")
+
+# ============================================================================
+# ENTERPRISE RATE LIMITER - Token Bucket Algorithm (Millisecond-based)
+# ============================================================================
+class TokenBucketRateLimiter:
+    """
+    Token bucket algorithm for precise rate limiting.
+    Configured in milliseconds for maximum control over email sending rates.
+    
+    Example: 10 emails per 1000ms (1 second) = 10 emails/second
+             1 email per 100ms = 10 emails/second
+             50 emails per 5000ms = 10 emails/second
+    """
+    def __init__(self, rate_per_ms: float, burst_capacity: int = None):
+        """
+        Initialize rate limiter with millisecond-based rate.
+        
+        Args:
+            rate_per_ms: Emails allowed per millisecond (e.g., 0.01 = 10 emails/second)
+            burst_capacity: Maximum burst size (default: rate * 1000 for 1-second burst)
+        """
+        self.rate_per_ms = rate_per_ms
+        self.burst_capacity = burst_capacity or max(int(rate_per_ms * 1000), 1)
+        self.tokens = float(self.burst_capacity)
+        self.last_update = time.time() * 1000  # Convert to milliseconds
+        self.lock = threading.Lock()
+        
+        logger.info(f"🎯 Rate Limiter initialized: {rate_per_ms} emails/ms, burst: {self.burst_capacity}")
+    
+    async def acquire(self, tokens: int = 1) -> float:
+        """
+        Acquire tokens from the bucket. Blocks until tokens are available.
+        Returns the wait time in seconds.
+        """
+        with self.lock:
+            current_time_ms = time.time() * 1000
+            time_passed_ms = current_time_ms - self.last_update
+            
+            # Refill tokens based on time passed
+            self.tokens = min(
+                self.burst_capacity,
+                self.tokens + (time_passed_ms * self.rate_per_ms)
+            )
+            self.last_update = current_time_ms
+            
+            # Calculate wait time if not enough tokens
+            if self.tokens < tokens:
+                needed_tokens = tokens - self.tokens
+                wait_time_ms = needed_tokens / self.rate_per_ms
+                wait_time_sec = wait_time_ms / 1000.0
+                
+                # Wait for tokens to refill
+                await asyncio.sleep(wait_time_sec)
+                
+                # Update tokens after waiting
+                self.tokens = 0
+                self.last_update = time.time() * 1000
+                
+                return wait_time_sec
+            else:
+                # Consume tokens immediately
+                self.tokens -= tokens
+                return 0.0
+    
+    def reset(self):
+        """Reset the rate limiter to full capacity"""
+        with self.lock:
+            self.tokens = float(self.burst_capacity)
+            self.last_update = time.time() * 1000
+
+# Global campaign scheduler
+campaign_scheduler = None
+scheduled_campaigns = {}  # Track scheduled campaigns
+
+def get_scheduler():
+    """Get or create the campaign scheduler"""
+    global campaign_scheduler
+    if campaign_scheduler is None and SCHEDULER_AVAILABLE:
+        campaign_scheduler = AsyncIOScheduler()
+        campaign_scheduler.start()
+        logger.info("✅ Campaign scheduler started")
+    return campaign_scheduler
 
 app = FastAPI(title="Firebase Email Campaign Backend", version="2.0.0")
 
@@ -976,15 +1070,24 @@ class CampaignCreate(BaseModel):
     name: str
     projectIds: List[str]
     selectedUsers: Dict[str, List[str]]
-    batchSize: int
-    workers: int
+    batchSize: int = 50
+    workers: int = 5
     template: Optional[str] = None
+    # NEW: Enterprise sending modes
+    sending_mode: str = "turbo"  # "turbo", "throttled", "scheduled"
+    turbo_config: Optional[Dict[str, Any]] = None
+    throttle_config: Optional[Dict[str, Any]] = None
+    schedule_config: Optional[Dict[str, Any]] = None
 
 class CampaignUpdate(BaseModel):
     name: Optional[str] = None
     batchSize: Optional[int] = None
     workers: Optional[int] = None
     template: Optional[str] = None
+    sending_mode: Optional[str] = None
+    turbo_config: Optional[Dict[str, Any]] = None
+    throttle_config: Optional[Dict[str, Any]] = None
+    schedule_config: Optional[Dict[str, Any]] = None
 
 class BulkUserDelete(BaseModel):
     projectIds: List[str]
@@ -1971,7 +2074,12 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
 
 @app.post("/campaigns/send")
 async def send_campaign(request: Request):
-    """Optimized campaign send endpoint with true parallel processing and no delays."""
+    """
+    Enterprise Campaign Send Endpoint - Supports 3 modes:
+    1. TURBO: Maximum speed using all resources
+    2. THROTTLED: Rate-limited sending (ms-based)
+    3. SCHEDULED: Schedule for later execution
+    """
     try:
         # Parse JSON body
         try:
@@ -1981,123 +2089,331 @@ async def send_campaign(request: Request):
             logger.error(f"Failed to parse JSON request: {json_error}")
             return {"success": False, "error": "Invalid JSON request"}
         
-        # Handle different request formats from frontend
-        projects = request_data.get('projects')
-        project_id = request_data.get('projectId')  # Single project format
-        user_ids = request_data.get('userIds')  # Single project format
-        lightning = request_data.get('lightning', False)
-        workers = request_data.get('workers')
+        # Extract sending mode
+        sending_mode = request_data.get('sending_mode', 'turbo')
         campaign_id = request_data.get('campaignId', f"campaign_{int(time.time())}")
+        
+        # Handle different request formats
+        projects = request_data.get('projects')
+        project_id = request_data.get('projectId')
+        user_ids = request_data.get('userIds')
         
         # Convert single project format to multi-project format
         if project_id and user_ids:
             projects = [{'projectId': project_id, 'userIds': user_ids}]
         
         if not projects or not isinstance(projects, list):
-            logger.error(f"No projects provided in request: {request_data}")
+            logger.error(f"No projects provided in request")
             return {"success": False, "error": "No projects provided"}
-            
-        # Optimize worker configuration
-        if workers is None:
-            workers = 10  # Increased default
-        try:
-            workers = int(workers)
-        except Exception:
-            workers = 10
-            
-        logger.info(f"Starting optimized campaign send: {len(projects)} projects, workers: {workers}, lightning: {lightning}")
         
-        import concurrent.futures
-        loop = asyncio.get_event_loop()
+        logger.info(f"📨 Starting campaign {campaign_id} in {sending_mode.upper()} mode for {len(projects)} projects")
         
-        # Track results for summary
-        total_successful = 0
-        total_failed = 0
-        project_results = []
-        
-        # Execute all projects in true parallel - no delays
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(projects)) as executor:
-            futures = []
+        # ==================================================================
+        # MODE 1: TURBO - Maximum Speed
+        # ==================================================================
+        if sending_mode == 'turbo':
+            logger.info(f"🚀 [TURBO MODE] Firing all resources")
             
+            total_successful = 0
+            total_failed = 0
+            project_results = []
+            
+            # Process all projects in parallel
+            import concurrent.futures
+            loop = asyncio.get_event_loop()
+            
+            async def process_project_turbo(proj):
+                proj_id = str(proj.get('projectId', ''))
+                users = [str(uid) for uid in proj.get('userIds', []) if uid]
+                
+                if proj_id not in firebase_apps or proj_id not in pyrebase_apps:
+                    logger.error(f"Project {proj_id} not initialized")
+                    return {'project_id': proj_id, 'successful': 0, 'failed': len(users), 'total': len(users)}
+                
+                # Get Firebase instances
+                firebase_app = firebase_apps[proj_id]
+                pyrebase_auth = pyrebase_apps[proj_id].auth()
+                
+                # Get user emails
+                user_emails = {}
+                for uid in users:
+                    try:
+                        user = auth.get_user(uid, app=firebase_app)
+                        if user.email:
+                            user_emails[uid] = user.email
+                    except:
+                        pass
+                
+                email_list = list(user_emails.values())
+                create_campaign_result(campaign_id, proj_id, len(email_list))
+                
+                # TURBO: Use maximum workers
+                cpu_count = os.cpu_count() or 1
+                max_workers = min(cpu_count * 6, 100)
+                
+                def fire_email(email):
+                    try:
+                        pyrebase_auth.send_password_reset_email(email)
+                        user_id = next((uid for uid, em in user_emails.items() if em == email), None)
+                        update_campaign_result(campaign_id, proj_id, True, user_id=user_id, email=email)
+                        return True
+                    except Exception as e:
+                        user_id = next((uid for uid, em in user_emails.items() if em == email), None)
+                        update_campaign_result(campaign_id, proj_id, False, user_id=user_id, email=email, error=str(e))
+                        return False
+                
+                successful = 0
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(fire_email, email): email for email in email_list}
+                    for future in concurrent.futures.as_completed(futures):
+                        if future.result():
+                            successful += 1
+                
+                increment_daily_count(proj_id)
+                return {
+                    'project_id': proj_id,
+                    'successful': successful,
+                    'failed': len(email_list) - successful,
+                    'total': len(email_list)
+                }
+            
+            # Execute all projects in parallel
+            tasks = [process_project_turbo(proj) for proj in projects]
+            project_results = await asyncio.gather(*tasks)
+            
+            total_successful = sum(r['successful'] for r in project_results)
+            total_failed = sum(r['failed'] for r in project_results)
+            
+            response = {
+                "success": total_failed == 0,
+                "mode": "turbo",
+                "summary": {
+                    "successful": total_successful,
+                    "failed": total_failed,
+                    "total": total_successful + total_failed
+                },
+                "project_results": project_results,
+                "campaign_id": campaign_id,
+                "message": f"Turbo mode: {total_successful} successful, {total_failed} failed"
+            }
+            
+            logger.info(f"✅ [TURBO] Campaign completed: {response}")
+            return response
+        
+        # ==================================================================
+        # MODE 2: THROTTLED - Rate Limited (Millisecond-based)
+        # ==================================================================
+        elif sending_mode == 'throttled':
+            throttle_config = request_data.get('throttle_config', {})
+            emails_per_ms = throttle_config.get('emails_per_ms', 0.01)  # Default: 10/sec
+            burst_capacity = throttle_config.get('burst_capacity', 50)
+            
+            logger.info(f"⚙️ [THROTTLED MODE] Rate: {emails_per_ms} emails/ms, burst: {burst_capacity}")
+            
+            # Initialize rate limiter
+            rate_limiter = TokenBucketRateLimiter(
+                rate_per_ms=emails_per_ms,
+                burst_capacity=burst_capacity
+            )
+            
+            total_successful = 0
+            total_failed = 0
+            project_results = []
+            
+            async def process_project_throttled(proj):
+                proj_id = str(proj.get('projectId', ''))
+                users = [str(uid) for uid in proj.get('userIds', []) if uid]
+                
+                if proj_id not in firebase_apps or proj_id not in pyrebase_apps:
+                    logger.error(f"Project {proj_id} not initialized")
+                    return {'project_id': proj_id, 'successful': 0, 'failed': len(users), 'total': len(users)}
+                
+                # Get Firebase instances
+                firebase_app = firebase_apps[proj_id]
+                pyrebase_auth = pyrebase_apps[proj_id].auth()
+                
+                # Get user emails
+                user_emails = {}
+                for uid in users:
+                    try:
+                        user = auth.get_user(uid, app=firebase_app)
+                        if user.email:
+                            user_emails[uid] = user.email
+                    except:
+                        pass
+                
+                email_list = list(user_emails.values())
+                create_campaign_result(campaign_id, proj_id, len(email_list))
+                
+                async def fire_email_limited(email):
+                    # Acquire rate limit token
+                    wait_time = await rate_limiter.acquire(1)
+                    if wait_time > 0:
+                        logger.debug(f"[THROTTLED] Waited {wait_time:.3f}s")
+                    
+                    try:
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(None, pyrebase_auth.send_password_reset_email, email)
+                        user_id = next((uid for uid, em in user_emails.items() if em == email), None)
+                        update_campaign_result(campaign_id, proj_id, True, user_id=user_id, email=email)
+                        return True
+                    except Exception as e:
+                        user_id = next((uid for uid, em in user_emails.items() if em == email), None)
+                        update_campaign_result(campaign_id, proj_id, False, user_id=user_id, email=email, error=str(e))
+                        return False
+                
+                # Process with rate limiting
+                tasks = [fire_email_limited(email) for email in email_list]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                successful = sum(1 for r in results if r is True)
+                
+                increment_daily_count(proj_id)
+                return {
+                    'project_id': proj_id,
+                    'successful': successful,
+                    'failed': len(email_list) - successful,
+                    'total': len(email_list)
+                }
+            
+            # Execute all projects sequentially (to maintain rate limiting across projects)
             for proj in projects:
-                proj_id_val = proj.get('projectId', '')
-                project_id = str(proj_id_val) if proj_id_val is not None else ''
-                user_ids = [str(uid) if uid is not None else '' for uid in (proj.get('userIds', []) or [])]
-                # Filter out empty strings from user_ids
-                user_ids = [uid for uid in user_ids if uid]
-                app_name = f"{project_id}_{os.getpid()}_{uuid.uuid4().hex[:6]}"
-                
-                # Create campaign result tracking
-                create_campaign_result(campaign_id, project_id, len(user_ids))
-                
-                futures.append({
-                    'future': loop.run_in_executor(executor, fire_all_emails, project_id, user_ids, campaign_id, workers, lightning, app_name),
-                    'project_id': project_id,
-                    'user_count': len(user_ids)
-                })
+                result = await process_project_throttled(proj)
+                project_results.append(result)
+                total_successful += result['successful']
+                total_failed += result['failed']
             
-            # Wait for all to complete and collect results immediately
-            for fut_info in futures:
-                try:
-                    result = await fut_info['future']
-                    
-                    # Get campaign results for this project
-                    project_campaign_results = get_campaign_results(campaign_id, fut_info['project_id'])
-                    
-                    if project_campaign_results:
-                        for res in project_campaign_results:
-                            if res['project_id'] == fut_info['project_id']:
-                                total_successful += res.get('successful', 0)
-                                total_failed += res.get('failed', 0)
-                                project_results.append({
-                                    'project_id': fut_info['project_id'],
-                                    'successful': res.get('successful', 0),
-                                    'failed': res.get('failed', 0),
-                                    'total': res.get('total_users', fut_info['user_count'])
-                                })
-                                break
-                    else:
-                        # Fallback if no results tracked
-                        project_results.append({
-                            'project_id': fut_info['project_id'],
-                            'successful': fut_info['user_count'],
-                            'failed': 0,
-                            'total': fut_info['user_count']
-                        })
-                        total_successful += fut_info['user_count']
-                        
-                except Exception as e:
-                    logger.error(f"Campaign send failed for project {fut_info['project_id']}: {e}")
-                    total_failed += fut_info['user_count']
-                    project_results.append({
-                        'project_id': fut_info['project_id'],
-                        'successful': 0,
-                        'failed': fut_info['user_count'],
-                        'total': fut_info['user_count'],
-                        'error': str(e)
-                    })
+            response = {
+                "success": total_failed == 0,
+                "mode": "throttled",
+                "summary": {
+                    "successful": total_successful,
+                    "failed": total_failed,
+                    "total": total_successful + total_failed
+                },
+                "project_results": project_results,
+                "campaign_id": campaign_id,
+                "rate_limit": f"{emails_per_ms} emails/ms",
+                "message": f"Throttled mode: {total_successful} successful, {total_failed} failed"
+            }
+            
+            logger.info(f"✅ [THROTTLED] Campaign completed: {response}")
+            return response
         
-        # Prepare optimized response
-        response = {
-            "success": total_failed == 0,
-            "summary": {
-                "successful": total_successful,
-                "failed": total_failed,
-                "total": total_successful + total_failed
-            },
-            "project_results": project_results,
-            "campaign_id": campaign_id,
-            "workers": workers,
-            "lightning": lightning,
-            "message": f"Campaign completed: {total_successful} successful, {total_failed} failed"
-        }
+        # ==================================================================
+        # MODE 3: SCHEDULED - Schedule for Later
+        # ==================================================================
+        elif sending_mode == 'scheduled':
+            schedule_config = request_data.get('schedule_config', {})
+            scheduled_datetime_str = schedule_config.get('scheduled_datetime')
+            execution_mode = schedule_config.get('execution_mode', 'turbo')
+            
+            if not scheduled_datetime_str:
+                return {"success": False, "error": "No scheduled_datetime provided"}
+            
+            # Parse the scheduled time
+            try:
+                scheduled_datetime = datetime.fromisoformat(scheduled_datetime_str.replace('Z', '+00:00'))
+            except Exception as e:
+                return {"success": False, "error": f"Invalid datetime format: {str(e)}"}
+            
+            # Validate it's in the future
+            if scheduled_datetime <= datetime.now(timezone.utc):
+                return {"success": False, "error": "Scheduled time must be in the future"}
+            
+            logger.info(f"📅 [SCHEDULED MODE] Scheduling campaign for {scheduled_datetime}")
+            
+            # Store campaign data for scheduled execution
+            scheduled_campaigns[campaign_id] = {
+                'projects': projects,
+                'execution_mode': execution_mode,
+                'scheduled_datetime': scheduled_datetime_str,
+                'throttle_config': request_data.get('throttle_config'),
+                'created_at': datetime.now().isoformat()
+            }
+            
+            # Add to scheduler if available
+            if SCHEDULER_AVAILABLE:
+                scheduler = get_scheduler()
+                scheduler.add_job(
+                    execute_scheduled_campaign,
+                    DateTrigger(run_date=scheduled_datetime),
+                    args=[campaign_id],
+                    id=f"campaign_{campaign_id}"
+                )
+                logger.info(f"✅ Campaign {campaign_id} scheduled for {scheduled_datetime}")
+            else:
+                logger.warning("Scheduler not available - campaign queued but won't auto-execute")
+            
+            # Update campaign status
+            if campaign_id in active_campaigns:
+                active_campaigns[campaign_id]['status'] = 'scheduled'
+                active_campaigns[campaign_id]['scheduledAt'] = scheduled_datetime_str
+                save_campaigns_to_file()
+            
+            response = {
+                "success": True,
+                "mode": "scheduled",
+                "campaign_id": campaign_id,
+                "scheduled_datetime": scheduled_datetime_str,
+                "execution_mode": execution_mode,
+                "message": f"Campaign scheduled for {scheduled_datetime}"
+            }
+            
+            logger.info(f"✅ [SCHEDULED] Campaign queued: {response}")
+            return response
         
-        logger.info(f"Optimized campaign send completed: {response}")
-        return response
+        else:
+            return {"success": False, "error": f"Invalid sending_mode: {sending_mode}"}
         
     except Exception as e:
-        logger.error(f"Optimized campaign send failed: {str(e)}")
+        logger.error(f"Campaign send failed: {str(e)}")
         return {"success": False, "error": str(e), "summary": {"successful": 0, "failed": 0, "total": 0}}
+
+async def execute_scheduled_campaign(campaign_id: str):
+    """Execute a scheduled campaign at its configured time"""
+    try:
+        if campaign_id not in scheduled_campaigns:
+            logger.error(f"Scheduled campaign {campaign_id} not found")
+            return
+        
+        campaign_data = scheduled_campaigns[campaign_id]
+        logger.info(f"📅 Executing scheduled campaign {campaign_id}")
+        
+        # Update status
+        if campaign_id in active_campaigns:
+            active_campaigns[campaign_id]['status'] = 'running'
+            active_campaigns[campaign_id]['executedAt'] = datetime.now().isoformat()
+            save_campaigns_to_file()
+        
+        # Create request-like object for send_campaign
+        class FakeRequest:
+            async def json(self):
+                return {
+                    'projects': campaign_data['projects'],
+                    'sending_mode': campaign_data.get('execution_mode', 'turbo'),
+                    'throttle_config': campaign_data.get('throttle_config'),
+                    'campaignId': campaign_id
+                }
+        
+        fake_request = FakeRequest()
+        await send_campaign(fake_request)
+        
+        # Cleanup
+        if campaign_id in scheduled_campaigns:
+            del scheduled_campaigns[campaign_id]
+        
+        if campaign_id in active_campaigns:
+            active_campaigns[campaign_id]['status'] = 'completed'
+            save_campaigns_to_file()
+        
+        logger.info(f"✅ Scheduled campaign {campaign_id} completed")
+        
+    except Exception as e:
+        logger.error(f"Failed to execute scheduled campaign {campaign_id}: {e}")
+        if campaign_id in active_campaigns:
+            active_campaigns[campaign_id]['status'] = 'failed'
+            save_campaigns_to_file()
+
 
 @app.post("/test-reset-email")
 async def test_reset_email(request: Request):
