@@ -1957,19 +1957,38 @@ async def start_campaign(campaign_id: str):
                         return payload
                 
                 logger.info(f"🚀 Starting background execution for campaign {campaign_id} in {payload['sending_mode']} mode")
-                await send_campaign(FakeRequest())
+                response = await send_campaign(FakeRequest())
+                logger.info(f"Background execution response: {response}")
                 
-                # Update final status
-                if campaign_id in active_campaigns and active_campaigns[campaign_id]['status'] == 'running':
-                    active_campaigns[campaign_id]['status'] = 'completed'
-                    active_campaigns[campaign_id]['completedAt'] = datetime.now().isoformat()
-                    save_campaigns_to_file()
+                # Determine final status based on response
+                final_status = 'completed'
+                error_message = None
+                
+                if not response.get('success'):
+                    final_status = 'failed'
+                    error_message = response.get('error', 'Unknown error during sending')
+                    logger.error(f"Campaign execution failed: {error_message}")
+                elif response.get('mode') == 'scheduled':
+                    final_status = 'scheduled'
+                
+                # Update campaign status
+                if campaign_id in active_campaigns:
+                    # Check if status is still 'running' (prevent race conditions if user paused/cancelled)
+                    if active_campaigns[campaign_id]['status'] == 'running':
+                        active_campaigns[campaign_id]['status'] = final_status
+                        if final_status == 'completed':
+                            active_campaigns[campaign_id]['completedAt'] = datetime.now().isoformat()
+                        if error_message:
+                            active_campaigns[campaign_id]['errors'].append(error_message)
+                        
+                        save_campaigns_to_file()
+                        logger.info(f"Updated campaign {campaign_id} status to {final_status}")
                     
             except Exception as e:
                 logger.error(f"❌ Background campaign execution failed: {e}")
                 if campaign_id in active_campaigns:
                     active_campaigns[campaign_id]['status'] = 'failed'
-                    active_campaigns[campaign_id]['error'] = str(e)
+                    active_campaigns[campaign_id]['errors'].append(str(e))
                     save_campaigns_to_file()
 
         # Launch background task
