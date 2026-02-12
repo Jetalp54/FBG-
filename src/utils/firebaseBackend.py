@@ -1928,8 +1928,54 @@ async def start_campaign(campaign_id: str):
         
         campaign["status"] = "running"
         campaign["startedAt"] = datetime.now().isoformat()
+        save_campaigns_to_file()
         
-        return {"success": True}
+        # Prepare payload for send_campaign
+        projects_payload = []
+        for pid in campaign.get('projectIds', []):
+            uids = campaign.get('selectedUsers', {}).get(pid, [])
+            projects_payload.append({
+                'projectId': pid,
+                'userIds': uids
+            })
+            
+        payload = {
+            'projects': projects_payload,
+            'sending_mode': campaign.get('sending_mode', 'turbo'),
+            'turbo_config': campaign.get('turbo_config'),
+            'throttle_config': campaign.get('throttle_config'),
+            'schedule_config': campaign.get('schedule_config'),
+            'campaignId': campaign_id
+        }
+        
+        # Define background task
+        async def run_background_process():
+            try:
+                # Create request-like object
+                class FakeRequest:
+                    async def json(self):
+                        return payload
+                
+                logger.info(f"🚀 Starting background execution for campaign {campaign_id} in {payload['sending_mode']} mode")
+                await send_campaign(FakeRequest())
+                
+                # Update final status
+                if campaign_id in active_campaigns and active_campaigns[campaign_id]['status'] == 'running':
+                    active_campaigns[campaign_id]['status'] = 'completed'
+                    active_campaigns[campaign_id]['completedAt'] = datetime.now().isoformat()
+                    save_campaigns_to_file()
+                    
+            except Exception as e:
+                logger.error(f"❌ Background campaign execution failed: {e}")
+                if campaign_id in active_campaigns:
+                    active_campaigns[campaign_id]['status'] = 'failed'
+                    active_campaigns[campaign_id]['error'] = str(e)
+                    save_campaigns_to_file()
+
+        # Launch background task
+        asyncio.create_task(run_background_process())
+
+        return {"success": True, "message": "Campaign execution started"}
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start campaign: {str(e)}")
