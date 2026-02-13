@@ -1746,24 +1746,30 @@ async def bulk_delete_users(bulk_delete: dict):
                 else:
                     # Delete all users in the project
                     try:
-                        # List all users and delete them in batches
-                        page = auth.list_users(app=admin_auth)
-                        while page:
-                            user_uids = [user.uid for user in page.users]
-                            if user_uids:
-                                try:
-                                    # Delete users in batch using Firebase Admin SDK
-                                    results = auth.delete_users(user_uids, app=admin_auth)
-                                    project_deleted += results.success_count
-                                    total_deleted += results.success_count
-                                    project_failed += results.failure_count
-                                    logger.info(f"Deleted {results.success_count} users from project {project_id}")
-                                except Exception as e:
-                                    logger.error(f"Failed to delete batch of users from project {project_id}: {e}")
-                                    project_failed += len(user_uids)
+                        # List and delete in batches until no users remain
+                        while True:
+                            # Always list the first page; effectively popping users off the stack
+                            page = auth.list_users(app=admin_auth, max_results=1000)
+                            if not page.users:
+                                break
                             
-                            # Get next page
-                            page = page.get_next_page() if page.has_next_page else None
+                            user_uids = [user.uid for user in page.users]
+                            try:
+                                # Delete users in batch using Firebase Admin SDK
+                                results = auth.delete_users(user_uids, app=admin_auth)
+                                project_deleted += results.success_count
+                                total_deleted += results.success_count
+                                project_failed += results.failure_count
+                                logger.info(f"Deleted {results.success_count} users from project {project_id}")
+                            except Exception as e:
+                                logger.error(f"Failed to delete batch of users from project {project_id}: {e}")
+                                project_failed += len(user_uids)
+                                # Start fresh on next iteration or break if critical
+                                break
+                                
+                            # Brief pause to avoid rate limits
+                            await asyncio.sleep(0.1)
+                            
                     except Exception as e:
                         failed.append({"project_id": project_id, "reason": f"Failed to list users: {str(e)}"})
                         continue

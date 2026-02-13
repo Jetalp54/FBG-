@@ -14,19 +14,19 @@ import { Label } from '@/components/ui/label';
 const API_BASE_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:8000" : "/api";
 
 export const EnhancedUsersPage = () => {
-  const { 
-    projects, 
-    users, 
-    profiles, 
-    activeProfile, 
-    loadUsers, 
+  const {
+    projects,
+    users,
+    profiles,
+    activeProfile,
+    loadUsers,
     loadMoreUsers,
-    bulkDeleteUsers, 
+    bulkDeleteUsers,
     loading,
     refreshAllUsers
   } = useEnhancedApp();
   const { toast } = useToast();
-  
+
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedProject, setSelectedProject] = useState<string>('all');
@@ -39,13 +39,13 @@ export const EnhancedUsersPage = () => {
     const t = setTimeout(() => setDebouncedSearch(searchTerm), 300);
     return () => clearTimeout(t);
   }, [searchTerm]);
-  const [clipboard, setClipboard] = useState<{project: string, userIds: string[]} | null>(null);
+  const [clipboard, setClipboard] = useState<{ project: string, userIds: string[] } | null>(null);
   const [showPasteModal, setShowPasteModal] = useState(false);
   const [targetProjects, setTargetProjects] = useState<string[]>([]);
   const [splitEqually, setSplitEqually] = useState(false);
 
   // Filter projects by active profile
-  const activeProjects = projects.filter(p => 
+  const activeProjects = projects.filter(p =>
     (!activeProfile || p.profileId === activeProfile) && p.status === 'active'
   );
 
@@ -68,7 +68,7 @@ export const EnhancedUsersPage = () => {
   const handleRefreshUsers = async (projectId?: string) => {
     setLoadingUsers(true);
     setUserLoadError('');
-    
+
     try {
       const targets = projectId ? [projectId] : activeProjects.map(p => p.id);
       // Load only first page per project to avoid massive loads; users page can fetch more on demand later
@@ -79,7 +79,7 @@ export const EnhancedUsersPage = () => {
           setUserLoadError(`Failed to load users for project ${pid}`);
         }
       }));
-      
+
       toast({
         title: "Users Refreshed",
         description: "User list has been updated successfully.",
@@ -132,34 +132,36 @@ export const EnhancedUsersPage = () => {
 
   const handleDeleteAllUsers = async () => {
     const projectIds = selectedProject === 'all' ? activeProjects.map(p => p.id) : [selectedProject];
-    const totalUsers = projectIds.reduce((sum, pid) => sum + (users[pid]?.length || 0), 0);
-    
-    if (totalUsers === 0) {
-      toast({
-        title: "No Users Found",
-        description: "No users to delete.",
-        variant: "destructive",
-      });
+
+    // We don't know total users if not all loaded, so just warn generally
+    const confirmMessage = selectedProject === 'all'
+      ? `Are you sure you want to delete ALL users from ALL ${projectIds.length} projects? This cannot be undone.`
+      : `Are you sure you want to delete ALL users from this project? This cannot be undone.`;
+
+    if (!confirm(confirmMessage)) {
       return;
     }
 
-    if (!confirm(`Are you sure you want to delete ALL ${totalUsers} users from ${selectedProject === 'all' ? 'all projects' : `1 project`}?`)) {
+    // Double confirmation for safety
+    if (!confirm("This will permanently delete all users. Are you absolutely sure?")) {
       return;
     }
 
     try {
-      const allUserIds = projectIds.flatMap(pid => (users[pid] || []).map(u => u.uid));
-      await bulkDeleteUsers(projectIds, allUserIds);
+      // Pass empty/undefined/null userIds to indicate "delete all"
+      await bulkDeleteUsers(projectIds, undefined);
       setSelectedUsers(new Set());
+      // Refresh to clear the list
+      await handleRefreshUsers(selectedProject === 'all' ? undefined : selectedProject);
       toast({
-        title: "All Users Deleted",
-        description: `Successfully deleted ${totalUsers} users.`,
+        title: "Deletion Started",
+        description: `Deletion process started for ${projectIds.length} projects.`,
       });
     } catch (error) {
       console.error('Failed to delete all users:', error);
       toast({
         title: "Error",
-        description: "Failed to delete all users.",
+        description: "Failed to initiate delete all users.",
         variant: "destructive",
       });
     }
@@ -191,7 +193,7 @@ export const EnhancedUsersPage = () => {
     for (const projectId of projectsToShow) {
       const projectUsers = users[projectId] || [];
       const project = projects.find(p => p.id === projectId);
-      
+
       const filteredUsers = projectUsers.filter(user => {
         const q = debouncedSearch.toLowerCase();
         return !q || user.email.toLowerCase().includes(q) || user.displayName?.toLowerCase().includes(q);
@@ -213,14 +215,14 @@ export const EnhancedUsersPage = () => {
       });
       return;
     }
-    
+
     const csvContent = [
       'Email,Display Name,Email Verified,Disabled,Created At,Project',
-      ...filteredUsers.map(user => 
+      ...filteredUsers.map(user =>
         `${user.email},${user.displayName || ''},${user.emailVerified},${user.disabled},${user.createdAt || ''},${user.projectName || ''}`
       )
     ].join('\n');
-    
+
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -290,7 +292,7 @@ export const EnhancedUsersPage = () => {
         <div>
           <h1 className="text-3xl font-bold text-white mb-2">User Management</h1>
           <p className="text-gray-400">
-            Profile: <span className="text-blue-400 font-medium">{activeProfileName}</span> • 
+            Profile: <span className="text-blue-400 font-medium">{activeProfileName}</span> •
             Manage Firebase Authentication users across your projects
           </p>
           {userLoadError && (
@@ -360,10 +362,9 @@ export const EnhancedUsersPage = () => {
             {activeProjects.map((project) => (
               <SelectItem key={project.id} value={project.id} className="text-white hover:bg-gray-700">
                 <div className="flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full ${
-                    project.status === 'active' ? 'bg-green-500' :
-                    project.status === 'error' ? 'bg-red-500' : 'bg-yellow-500'
-                  }`} />
+                  <div className={`w-2 h-2 rounded-full ${project.status === 'active' ? 'bg-green-500' :
+                      project.status === 'error' ? 'bg-red-500' : 'bg-yellow-500'
+                    }`} />
                   {project.name}
                 </div>
               </SelectItem>
@@ -471,7 +472,7 @@ export const EnhancedUsersPage = () => {
                 <div className="text-red-400 font-bold mt-2">Warning: Selected project is not found in activeProjects. This may indicate a backend or state mismatch.</div>
               )}
             </div>
-            
+
             {filteredUsers.length === 0 && !loadingUsers ? (
               <div className="text-center py-8">
                 <Users className="w-12 h-12 text-gray-500 mx-auto mb-4" />
@@ -522,18 +523,16 @@ export const EnhancedUsersPage = () => {
                         )}
                         <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
                           <span>UID: {user.uid}</span>
-                          <span className={`px-2 py-1 rounded ${
-                            user.emailVerified 
-                              ? 'bg-green-500/20 text-green-400' 
+                          <span className={`px-2 py-1 rounded ${user.emailVerified
+                              ? 'bg-green-500/20 text-green-400'
                               : 'bg-red-500/20 text-red-400'
-                          }`}>
+                            }`}>
                             {user.emailVerified ? 'Verified' : 'Unverified'}
                           </span>
-                          <span className={`px-2 py-1 rounded ${
-                            user.disabled 
-                              ? 'bg-red-500/20 text-red-400' 
+                          <span className={`px-2 py-1 rounded ${user.disabled
+                              ? 'bg-red-500/20 text-red-400'
                               : 'bg-green-500/20 text-green-400'
-                          }`}>
+                            }`}>
                             {user.disabled ? 'Disabled' : 'Active'}
                           </span>
                         </div>
