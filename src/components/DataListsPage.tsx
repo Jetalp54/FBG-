@@ -42,9 +42,9 @@ export const DataListsPage = () => {
     const [listStatus, setListStatus] = useState('fresh');
 
     // Filters
-    const [filterISP, setFilterISP] = useState('');
-    const [filterGeo, setFilterGeo] = useState('');
-    const [filterStatus, setFilterStatus] = useState('');
+    const [filterISP, setFilterISP] = useState('all');
+    const [filterGeo, setFilterGeo] = useState('all');
+    const [filterStatus, setFilterStatus] = useState('all');
 
     // Distribution state
     const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
@@ -61,9 +61,9 @@ export const DataListsPage = () => {
     const fetchDataLists = async () => {
         try {
             const params = new URLSearchParams();
-            if (filterISP) params.append('isp', filterISP);
-            if (filterGeo) params.append('geo', filterGeo);
-            if (filterStatus) params.append('status', filterStatus);
+            if (filterISP && filterISP !== 'all') params.append('isp', filterISP);
+            if (filterGeo && filterGeo !== 'all') params.append('geo', filterGeo);
+            if (filterStatus && filterStatus !== 'all') params.append('status', filterStatus);
 
             const response = await fetch(`${API_BASE_URL}/data-lists?${params}`);
             const data = await response.json();
@@ -249,7 +249,7 @@ export const DataListsPage = () => {
                             <SelectValue placeholder="All ISPs" />
                         </SelectTrigger>
                         <SelectContent>
-                            <SelectItem value="">All ISPs</SelectItem>
+                            <SelectItem value="all">All ISPs</SelectItem>
                             <SelectItem value="gmail">Gmail</SelectItem>
                             <SelectItem value="outlook">Outlook</SelectItem>
                             <SelectItem value="yahoo">Yahoo</SelectItem>
@@ -262,7 +262,7 @@ export const DataListsPage = () => {
                             <SelectValue placeholder="All Locations" />
                         </SelectTrigger>
                         <SelectContent>
-                            <SelectItem value="">All Locations</SelectItem>
+                            <SelectItem value="all">All Locations</SelectItem>
                             <SelectItem value="US">United States</SelectItem>
                             <SelectItem value="UK">United Kingdom</SelectItem>
                             <SelectItem value="CA">Canada</SelectItem>
@@ -275,7 +275,7 @@ export const DataListsPage = () => {
                             <SelectValue placeholder="All Statuses" />
                         </SelectTrigger>
                         <SelectContent>
-                            <SelectItem value="">All Statuses</SelectItem>
+                            <SelectItem value="all">All Statuses</SelectItem>
                             <SelectItem value="fresh">Fresh</SelectItem>
                             <SelectItem value="open">Open</SelectItem>
                             <SelectItem value="click">Click</SelectItem>
@@ -313,9 +313,9 @@ export const DataListsPage = () => {
                                         <td className="px-6 py-4 text-gray-300">{list.geo}</td>
                                         <td className="px-6 py-4">
                                             <span className={`px-2 py-1 text-xs font-medium rounded ${list.status === 'fresh' ? 'bg-green-900/50 text-green-300' :
-                                                    list.status === 'open' ? 'bg-yellow-900/50 text-yellow-300' :
-                                                        list.status === 'click' ? 'bg-purple-900/50 text-purple-300' :
-                                                            'bg-red-900/50 text-red-300'
+                                                list.status === 'open' ? 'bg-yellow-900/50 text-yellow-300' :
+                                                    list.status === 'click' ? 'bg-purple-900/50 text-purple-300' :
+                                                        'bg-red-900/50 text-red-300'
                                                 }`}>
                                                 {list.status.toUpperCase()}
                                             </span>
