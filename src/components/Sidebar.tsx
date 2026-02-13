@@ -10,7 +10,8 @@ import {
   Trash2,
   Brain,
   TestTube,
-  Globe
+  Globe,
+  Database,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -80,6 +81,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'dashboard', label: 'Dashboard', icon: Home, key: 'dashboard', show: true },
     { id: 'projects', label: 'Projects', icon: FolderOpen, key: 'projects', show: can('projects') },
     { id: 'users', label: 'Users', icon: Users, key: 'users', show: can('users', false) },
+    { id: 'data-lists', label: 'Data Lists', icon: Database, key: 'campaigns', show: can('campaigns') },
     { id: 'campaigns', label: 'Campaigns', icon: Mail, key: 'campaigns', show: can('campaigns') },
     { id: 'templates', label: 'Templates', icon: FileText, key: 'templates', show: can('templates', false) },
     { id: 'cloudflare', label: 'Domain Verification', icon: Globe, key: 'cloudflare', show: can('cloudflare', false) },
@@ -97,6 +99,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         name: newProfileName.trim(),
         description: newProfileDescription.trim(),
         projectIds: [],
+        ownerId: (typeof window !== 'undefined' ? localStorage.getItem('app-username') : 'admin') || 'admin'
       });
       setNewProfileName('');
       setNewProfileDescription('');
@@ -200,8 +203,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <button
                   onClick={() => setCurrentPage(item.id)}
                   className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-colors ${currentPage === item.id
-                      ? 'bg-blue-600 text-white'
-                      : 'text-gray-300 hover:bg-gray-700 hover:text-white'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-300 hover:bg-gray-700 hover:text-white'
                     }`}
                 >
                   <Icon className="w-5 h-5" />

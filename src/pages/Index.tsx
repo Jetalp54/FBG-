@@ -14,6 +14,7 @@ import { CloudflareDomainManager } from '@/components/CloudflareDomainManager';
 import { useEnhancedApp } from '@/contexts/EnhancedAppContext';
 import { Toaster } from '@/components/ui/toaster';
 import React, { Component, ErrorInfo, ReactNode } from 'react';
+import { DataListsPage } from '@/components/DataListsPage';
 import { AuditLogsPage } from '@/components/AuditLogsPage';
 
 const AppContent = () => {
@@ -46,6 +47,8 @@ const AppContent = () => {
         return <ProjectsPage />;
       case 'users':
         return <EnhancedUsersPage />;
+      case 'data-lists':
+        return <DataListsPage />;
       case 'campaigns':
         return <CampaignsPage />;
       case 'templates':
