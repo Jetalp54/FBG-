@@ -4853,7 +4853,9 @@ async def initiate_domain_verification(request: DomainVerificationRequest):
             raise HTTPException(status_code=400, detail="Invalid domain format")
         
         # Generate verification record
-        verification_domain, verification_token = cf_client.create_verification_record(domain)
+        # Use first project ID for verification token generation
+        project_id = request.project_ids[0] if request.project_ids else "unknown"
+        verification_domain, verification_token = cf_client.create_verification_record(domain, project_id)
         
         # Store verification status
         verification_id = hashlib.md5(f"{domain}:{datetime.now()}".encode()).hexdigest()[:16]
