@@ -3985,7 +3985,7 @@ async def update_project_domain_bulk(data: BulkDomainUpdate, request: Request):
                             )
                             authed_session = AuthorizedSession(credentials_obj)
                             
-                            sender_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=notification.sendEmail.method,notification.sendEmail.smtp,notification.resetPassword.emailTemplate.senderLocalPart"
+                            sender_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=notification.sendEmail.method,notification.sendEmail.smtp"
                             sender_payload = {
                                 "notification": {
                                     "sendEmail": {
@@ -3997,15 +3997,10 @@ async def update_project_domain_bulk(data: BulkDomainUpdate, request: Request):
                                             "username": f"noreply@{new_auth_domain}",
                                             "securityMode": "START_TLS"
                                         }
-                                    },
-                                    "resetPassword": {
-                                        "emailTemplate": {
-                                            "senderLocalPart": "noreply"
-                                        }
                                     }
                                 }
                             }
-                            logger.info(f"Setting CUSTOM_SMTP and Template Sender for project {project_id} with domain {new_auth_domain}")
+                            logger.info(f"Setting CUSTOM_SMTP method for project {project_id} with domain {new_auth_domain}")
                             sender_response = authed_session.patch(sender_url, json=sender_payload)
                             if not sender_response.ok:
                                 logger.warning(f"Failed to set CUSTOM_SMTP for {project_id}: {sender_response.text}")
