@@ -3985,85 +3985,32 @@ async def update_project_domain_bulk(data: BulkDomainUpdate, request: Request):
                             )
                             authed_session = AuthorizedSession(credentials_obj)
                             
-                            
-                            # Update Authorized Domains (for Redirects)
-                            # This part is standard and works
-                            # ... (Already done by update_firebase_projects_domain)
-
-                            # NOW: Attempt to Verify Domain for Email Sending (Native)
-                            # This replaces the CUSTOM_SMTP logic
-                            try:
-                                logger.info(f"Attempting to verify custom domain {new_auth_domain} for project {project_id}...")
-                                
-                                # 1. Call Identity Toolkit API to add the domain
-                                # This is the endpoint to register a custom domain for email sending
-                                verify_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/domains"
-                                verify_payload = {"domainName": new_auth_domain}
-                                
-                                verify_response = authed_session.post(verify_url, json=verify_payload)
-                                
-                                if verify_response.status_code == 200:
-                                    domain_data = verify_response.json()
-                                    logger.info(f"Domain registration successful: {domain_data}")
-                                    
-                                    # 2. Extract DNS Records
-                                    verification_info = domain_data.get("verificationInfo", {})
-                                    dns_records = []
-                                    
-                                    # Handle TXT records
-                                    if "txtRecord" in verification_info:
-                                        dns_records.append({
-                                            "type": "TXT",
-                                            "name": new_auth_domain, # or @ if root
-                                            "content": verification_info["txtRecord"],
-                                            "proxied": False
-                                        })
-                                        
-                                    # Handle CNAME/SPF/DKIM if provided
-                                    if "dnsRecords" in verification_info:
-                                        for record in verification_info["dnsRecords"]:
-                                            dns_records.append({
-                                                "type": record.get("recordType", "TXT"),
-                                                "name": record.get("domainName", new_auth_domain),
-                                                "content": record.get("data"),
-                                                "proxied": False
-                                            })
-
-                                    # 3. Add to Cloudflare
-                                    if dns_records:
-                                        logger.info(f"Adding {len(dns_records)} verification records to Cloudflare...")
-                                        # Use the existing cloudflare client logic or direct call
-                                        # We need to find the Zone ID for the domain
-                                        # Assuming the domain is managed by the user's CF account
-                                        
-                                        # We can instantiate the Cloudflare manager if user provided credentials
-                                        # Or just log the records for now if we can't fully automate
-                                        
-                                        # Try to find tokens from environment
-                                        cf_token = os.getenv("CLOUDFLARE_API_TOKEN")
-                                        if cf_token:
-                                            from src.utils.cloudflare_client import CloudflareDomainManager
-                                            cf_manager = CloudflareDomainManager(cf_token)
-                                            # We need to find the zone ID. extract root domain.
-                                            # This is complex to do robustly in one step, so we'll try best effort
-                                            root_domain = ".".join(new_auth_domain.split('.')[-2:]) # Simple heuristic
-                                            
-                                            zone_id = await cf_manager.get_zone_id(root_domain)
-                                            if zone_id:
-                                                 for record in dns_records:
-                                                     await cf_manager.add_dns_record(zone_id, record["type"], record["name"], record["content"], proxied=False)
-                                                 logger.info("Successfully added verification records to Cloudflare")
-                                            else:
-                                                logger.warning(f"Could not find Cloudflare zone for {root_domain}")
-                                        else:
-                                            logger.warning("CLOUDFLARE_API_TOKEN not set, cannot automate DNS records")
-                                            
-                                else:
-                                    logger.warning(f"Failed to register domain {new_auth_domain}: {verify_response.status_code} {verify_response.text}")
-                                    
-                            except Exception as e:
-                                logger.error(f"Error verifying custom domain: {e}")
-
+                            sender_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=notification.sendEmail.method,notification.sendEmail.smtp,notification.resetPassword.emailTemplate.senderLocalPart"
+                            sender_payload = {
+                                "notification": {
+                                    "sendEmail": {
+                                        "method": "CUSTOM_SMTP",
+                                        "smtp": {
+                                            "senderEmail": f"noreply@{new_auth_domain}",
+                                            "host": "smtp.gmail.com", # Default, can be changed in settings
+                                            "port": 587,
+                                            "username": f"noreply@{new_auth_domain}",
+                                            "securityMode": "START_TLS"
+                                        }
+                                    },
+                                    "resetPassword": {
+                                        "emailTemplate": {
+                                            "senderLocalPart": "noreply"
+                                        }
+                                    }
+                                }
+                            }
+                            logger.info(f"Setting CUSTOM_SMTP and Template Sender for project {project_id} with domain {new_auth_domain}")
+                            sender_response = authed_session.patch(sender_url, json=sender_payload)
+                            if not sender_response.ok:
+                                logger.warning(f"Failed to set CUSTOM_SMTP for {project_id}: {sender_response.text}")
+                            else:
+                                logger.info(f"Successfully configured SMTP sender for {project_id}")
                     except Exception as smtp_error:
                         logger.error(f"Failed to configure SMTP for {project_id}: {smtp_error}")
 
