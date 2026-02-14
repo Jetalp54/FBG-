@@ -3888,7 +3888,7 @@ class BulkSMTPConfig(BaseModel):
     security_mode: str = "START_TLS"
     user: Optional[str] = None
 
-@app.post("/api/update-project-domain")
+@app.post("/update-project-domain")
 async def update_project_domain(data: DomainUpdate, request: Request):
     """Update the auth domain for a single Firebase project"""
     try:
@@ -3938,7 +3938,7 @@ async def update_project_domain(data: DomainUpdate, request: Request):
         logger.error(f"Failed to update domain for project {data.project_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to update domain: {str(e)}")
 
-@app.post("/api/update-project-domain-bulk")
+@app.post("/update-project-domain-bulk")
 async def update_project_domain_bulk(data: BulkDomainUpdate, request: Request):
     """Update the auth domain for multiple Firebase projects"""
     try:
