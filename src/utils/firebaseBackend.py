@@ -3973,42 +3973,6 @@ async def update_project_domain_bulk(data: BulkDomainUpdate, request: Request):
                 domain_results = await update_firebase_projects_domain(new_auth_domain, [project_id])
                 
                 if domain_results.get(project_id, {}).get('success'):
-                    # ALSO Update the SMTP settings to use this domain for sending
-                    try:
-                        # Get project specific service account to make the API call
-                        project = projects[project_id]
-                        service_account_json = project.get('serviceAccount')
-                        if service_account_json:
-                            credentials_obj = service_account.Credentials.from_service_account_info(
-                                service_account_json,
-                                scopes=['https://www.googleapis.com/auth/firebase', 'https://www.googleapis.com/auth/cloud-platform']
-                            )
-                            authed_session = AuthorizedSession(credentials_obj)
-                            
-                            sender_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=notification.sendEmail.method,notification.sendEmail.smtp"
-                            sender_payload = {
-                                "notification": {
-                                    "sendEmail": {
-                                        "method": "CUSTOM_SMTP",
-                                        "smtp": {
-                                            "senderEmail": f"noreply@{new_auth_domain}",
-                                            "host": "smtp.gmail.com", # Default, can be changed in settings
-                                            "port": 587,
-                                            "username": f"noreply@{new_auth_domain}",
-                                            "securityMode": "START_TLS"
-                                        }
-                                    }
-                                }
-                            }
-                            logger.info(f"Setting CUSTOM_SMTP method for project {project_id} with domain {new_auth_domain}")
-                            sender_response = authed_session.patch(sender_url, json=sender_payload)
-                            if not sender_response.ok:
-                                logger.warning(f"Failed to set CUSTOM_SMTP for {project_id}: {sender_response.text}")
-                            else:
-                                logger.info(f"Successfully configured SMTP sender for {project_id}")
-                    except Exception as smtp_error:
-                        logger.error(f"Failed to configure SMTP for {project_id}: {smtp_error}")
-
                     # Log the change
                     write_audit_log(user, "update_domain", {
                         "project_id": project_id,
@@ -4378,15 +4342,23 @@ async def update_firebase_projects_domain(domain: str, project_ids: List[str]) -
                 authorized_domains.append(domain)
                 domain_added = True
             
-            # Update configuration - PRIMARY GOAL: Add domain to authorizedDomains
-            # dnsConfig is read-only or handled via VerifyCustomDomain, so we don't set it here
+            # Update configuration including dnsConfig for custom email domain
+            # This is the critical part to enable the "Custom email handler domain" in Firebase console
             update_payload = {
-                "authorizedDomains": authorized_domains
+                "authorizedDomains": authorized_domains,
+                "notification": {
+                    "sendEmail": {
+                        "dnsConfig": {
+                            "customDomain": domain,
+                            "useCustomDomain": True
+                        }
+                    }
+                }
             }
             
-            update_mask = "authorizedDomains"
+            update_mask = "authorizedDomains,notification.sendEmail.dnsConfig"
             
-            logger.info(f"Updating Firebase Identity Platform authorizedDomains for {project_id} to include {domain}")
+            logger.info(f"Updating Firebase Identity Platform config for {project_id} with custom domain {domain}")
             
             update_response = authed_session.patch(
                 config_url,
@@ -5012,6 +4984,63 @@ async def get_verification_status(verification_id: str):
         "verification_id": verification_id,
         **verification
     }
+
+async def update_firebase_projects_domain(domain: str, project_ids: List[str]) -> Dict:
+    """Update Firebase projects with authorized domain"""
+    results = {"successful": 0, "failed": 0, "details": []}
+    
+    for project_id in project_ids:
+        try:
+            # Load project
+            project = next((p for p in projects if p['id'] == project_id), None)
+            if not project:
+                results["failed"] += 1
+                results["details"].append({"project_id": project_id, "success": False, "error": "Project not found"})
+                continue
+            
+            # Update authDomain
+            project['authDomain'] = domain
+            
+            # Update Firebase Auth configuration
+            try:
+                cred_path = project.get('serviceAccount')
+                if cred_path and os.path.exists(cred_path):
+                    cred = credentials.Certificate(cred_path)
+                    scoped_credentials = cred.with_scopes([
+                        'https://www.googleapis.com/auth/cloud-platform',
+                        'https://www.googleapis.com/auth/identitytoolkit'
+                    ])
+                    authed_session = AuthorizedSession(scoped_credentials)
+                    
+                    # Update authorized domains
+                    url = f"https://identitytoolkit.googleapis.com/admin/v2/projects/{project_id}/config"
+                    config_data = {
+                        "authorizedDomains": [domain, f"{project_id}.firebaseapp.com"],
+                    }
+                    
+                    response = authed_session.patch(url, json=config_data, params={"updateMask": "authorizedDomains"})
+                    
+                    if response.status_code == 200:
+                        logger.info(f"Updated Firebase Auth domain for {project_id}: {domain}")
+                        results["successful"] += 1
+                        results["details"].append({"project_id": project_id, "success": True})
+                    else:
+                        raise Exception(f"API returned {response.status_code}: {response.text}")
+            
+            except Exception as e:
+                logger.error(f"Failed to update Firebase Auth for {project_id}: {e}")
+                results["failed"] += 1
+                results["details"].append({"project_id": project_id, "success": False, "error": str(e)})
+        
+        except Exception as e:
+            logger.error(f"Failed to update project {project_id}: {e}")
+            results["failed"] += 1
+            results["details"].append({"project_id": project_id, "success": False, "error": str(e)})
+    
+    # Save projects
+    save_projects_to_file()
+    
+    return results
 
 @app.get("/cloudflare/verified-domains")
 async def list_verified_domains():
