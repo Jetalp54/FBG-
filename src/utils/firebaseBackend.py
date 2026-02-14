@@ -4342,23 +4342,15 @@ async def update_firebase_projects_domain(domain: str, project_ids: List[str]) -
                 authorized_domains.append(domain)
                 domain_added = True
             
-            # Update configuration including dnsConfig for custom email domain
-            # This is the critical part to enable the "Custom email handler domain" in Firebase console
+            # Update configuration - PRIMARY GOAL: Add domain to authorizedDomains
+            # dnsConfig is read-only or handled via VerifyCustomDomain, so we don't set it here
             update_payload = {
-                "authorizedDomains": authorized_domains,
-                "notification": {
-                    "sendEmail": {
-                        "dnsConfig": {
-                            "customDomain": domain,
-                            "useCustomDomain": True
-                        }
-                    }
-                }
+                "authorizedDomains": authorized_domains
             }
             
-            update_mask = "authorizedDomains,notification.sendEmail.dnsConfig"
+            update_mask = "authorizedDomains"
             
-            logger.info(f"Updating Firebase Identity Platform config for {project_id} with custom domain {domain}")
+            logger.info(f"Updating Firebase Identity Platform authorizedDomains for {project_id} to include {domain}")
             
             update_response = authed_session.patch(
                 config_url,
