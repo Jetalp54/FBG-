@@ -3136,62 +3136,37 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
             )
             authed_session = AuthorizedSession(credentials)
             
-            # Update all relevant templates (Reset Password, Verify Email, Change Email)
+            # Update Reset Password template
             if template_patch:
                 # 1. Fetch current config to merge template fields (avoiding destructive overwrite)
                 config_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config"
                 config_resp = authed_session.get(config_url)
                 
-                current_notification = {}
+                merged_template = template_patch
                 if config_resp.ok:
-                    current_notification = config_resp.json().get('notification', {})
+                    current_config = config_resp.json()
+                    existing_template = current_config.get('notification', {}).get('sendEmail', {}).get('resetPasswordTemplate', {})
+                    if existing_template:
+                        merged_template = {**existing_template, **template_patch}
+                        logger.info(f"Merged existing template fields for project {project_id}")
                 
-                send_email_config = current_notification.get('sendEmail', {})
-                
-                # Templates to update
-                template_types = ["resetPasswordTemplate", "verifyEmailTemplate", "changeEmailTemplate"]
-                notification_updates = {}
-                
-                for t_type in template_types:
-                    # Get existing fields for this specific template
-                    existing_template = send_email_config.get(t_type, {})
-                    
-                    # Merge sender info (Universal for all templates)
-                    merged = dict(existing_template)
-                    if "senderDisplayName" in template_patch:
-                        merged["senderDisplayName"] = template_patch["senderDisplayName"]
-                    if "senderLocalPart" in template_patch:
-                        merged["senderLocalPart"] = template_patch["senderLocalPart"]
-                    if "replyTo" in template_patch:
-                        merged["replyTo"] = template_patch["replyTo"]
-                        
-                    # Apply subject/body ONLY to resetPasswordTemplate (current frontend focuses on this)
-                    if t_type == "resetPasswordTemplate":
-                        if "subject" in template_patch:
-                            merged["subject"] = template_patch["subject"]
-                        if "body" in template_patch:
-                            merged["body"] = template_patch["body"]
-                    
-                    notification_updates[t_type] = merged
-                
-                # 2. Patch with merged templates
-                mask = "notification.sendEmail.resetPasswordTemplate,notification.sendEmail.verifyEmailTemplate,notification.sendEmail.changeEmailTemplate"
-                url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask={mask}"
-                
+                # 2. Patch with merged template
+                url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=notification.sendEmail.resetPasswordTemplate"
                 payload = {
                     "notification": {
-                        "sendEmail": notification_updates
+                        "sendEmail": {
+                            "resetPasswordTemplate": merged_template
+                        }
                     }
                 }
-                
-                logger.info(f"Sending multi-template update to Firebase API for project {project_id}")
+                logger.info(f"Sending reset template update to Firebase API for project {project_id}")
                 response = authed_session.patch(url, json=payload)
                 if not response.ok:
                     error_text = response.text
                     logger.error(f"Firebase API error for project {project_id}: {response.status_code} - {error_text}")
                     return {"project_id": project_id, "success": False, "error": f"Firebase API error: {response.status_code} - {error_text}"}
                 
-                logger.info(f"All notification templates updated for project {project_id} by {user or 'unknown'}")
+                logger.info(f"Reset password template updated for project {project_id} by {user or 'unknown'}")
             
             # Update domain configuration if provided (using our non-destructive helper)
             if authDomain and authDomain.strip():
@@ -3202,7 +3177,7 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                     error_msg = domain_results.get(project_id, {}).get('error', 'Unknown error')
                     logger.warning(f"Failed to set dnsConfig for {project_id}: {error_msg}")
                 
-                # IMPORTANT: Also set CUSTOM_SMTP method to ensure custom domain is used
+                # Set CUSTOM_SMTP method to ensure custom domain is used
                 try:
                     sender_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config"
                     sender_payload = {
@@ -3226,6 +3201,10 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                 except Exception as sender_error:
                     logger.warning(f"SMTP configuration update not performed for {project_id}: {sender_error}")
                 
+                # Update project state in memory
+                if project_id in projects:
+                    projects[project_id]['authDomain'] = authDomain.strip()
+                
                 logger.info(f"Updated auth domain for project {project_id} to {authDomain.strip()}")
                 write_audit_log(user, "update_domain", {
                     "project_id": project_id,
@@ -3235,10 +3214,11 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
             
             write_audit_log(user, 'update_template', {'project_ids': project_ids, 'fields_updated': list(template_patch.keys()) if template_patch else []})
             asyncio.create_task(notify_ws('template_update', {'project_id': project_id, 'fields_updated': list(template_patch.keys()) if template_patch else [], 'user': user}))
-            return {"project_id": project_id, "success": True, "message": "All templates and domain updated successfully."}
+            return {"project_id": project_id, "success": True, "message": "Template and domain updated successfully."}
         except Exception as e:
-            logger.error(f"Failed to update templates for project {project_id}: {e}")
+            logger.error(f"Failed to update template for project {project_id}: {e}")
             return {"project_id": project_id, "success": False, "error": str(e)}
+
 
     update_tasks = [update_single_project(project_id) for project_id in project_ids]
     results = await asyncio.gather(*update_tasks)
