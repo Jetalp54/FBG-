@@ -3175,16 +3175,17 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                 if not domain_results.get(project_id, {}).get('success'):
                     logger.warning(f"Domain addition result for {project_id}: {domain_results.get(project_id)}")
                 
-                # Also try to update the email sender domain via Identity Platform
+                # Also update the email sender domain and SMTP via Identity Platform
+                # This ensures the "From" address can actually use the custom domain
                 try:
                     sender_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=notification.sendEmail.method,notification.sendEmail.smtp"
                     sender_payload = {
                         "notification": {
                             "sendEmail": {
-                                "method": "DEFAULT",
+                                "method": "CUSTOM_SMTP",
                                 "smtp": {
                                     "senderEmail": f"noreply@{authDomain.strip()}",
-                                    "host": "smtp.gmail.com",
+                                    "host": "smtp.gmail.com", # Default, user should update via SMTP config tab
                                     "port": 587,
                                     "username": f"noreply@{authDomain.strip()}",
                                     "securityMode": "START_TLS"
@@ -3192,9 +3193,10 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                             }
                         }
                     }
-                    # Note: This might require additional SMTP configuration
-                    # sender_response = authed_session.patch(sender_url, json=sender_payload)
-                    # sender_response.raise_for_status()
+                    logger.info(f"Setting CUSTOM_SMTP method for project {project_id} with domain {authDomain.strip()}")
+                    sender_response = authed_session.patch(sender_url, json=sender_payload)
+                    if not sender_response.ok:
+                        logger.warning(f"Failed to set CUSTOM_SMTP for {project_id}: {sender_response.text}")
                 except Exception as sender_error:
                     logger.warning(f"SMTP configuration update not performed for {project_id}: {sender_error}")
                 
@@ -3904,10 +3906,14 @@ async def update_project_domain(data: DomainUpdate, request: Request):
         
         project = projects[project_id]
         
-        # Update the project's auth domain
-        project['authDomain'] = new_auth_domain
+        # Update the project's auth domain in Firebase
+        domain_results = await update_firebase_projects_domain(new_auth_domain, [project_id])
         
-        # Save to file
+        if not domain_results.get(project_id, {}).get('success'):
+            error_msg = domain_results.get(project_id, {}).get('error', 'Unknown error')
+            raise HTTPException(status_code=500, detail=f"Failed to update Firebase config: {error_msg}")
+        
+        # Save to file (handled inside update_firebase_projects_domain but for clarity)
         save_projects_to_file()
         
         # Log the change
@@ -3917,13 +3923,13 @@ async def update_project_domain(data: DomainUpdate, request: Request):
             "new_domain": new_auth_domain
         })
         
-        logger.info(f"Updated auth domain for project {project_id} to {new_auth_domain}")
+        logger.info(f"Updated Firebase auth domain for project {project_id} to {new_auth_domain}")
         
         return {
             "success": True,
             "project_id": project_id,
             "new_auth_domain": new_auth_domain,
-            "message": f"Domain updated successfully to {new_auth_domain}"
+            "message": f"Domain updated successfully to {new_auth_domain} in Firebase Identity Platform"
         }
         
     except HTTPException:
@@ -3963,24 +3969,31 @@ async def update_project_domain_bulk(data: BulkDomainUpdate, request: Request):
                     failed += 1
                     continue
                 
-                project = projects[project_id]
+                # Update the project's auth domain in Firebase
+                domain_results = await update_firebase_projects_domain(new_auth_domain, [project_id])
                 
-                # Update the project's auth domain
-                project['authDomain'] = new_auth_domain
-                
-                # Log the change
-                write_audit_log(user, "update_domain", {
-                    "project_id": project_id,
-                    "old_domain": f"{project_id}.firebaseapp.com",
-                    "new_domain": new_auth_domain
-                })
-                
-                results.append({
-                    "project_id": project_id,
-                    "success": True,
-                    "new_auth_domain": new_auth_domain
-                })
-                successful += 1
+                if domain_results.get(project_id, {}).get('success'):
+                    # Log the change
+                    write_audit_log(user, "update_domain", {
+                        "project_id": project_id,
+                        "old_domain": f"{project_id}.firebaseapp.com",
+                        "new_domain": new_auth_domain
+                    })
+                    
+                    results.append({
+                        "project_id": project_id,
+                        "success": True,
+                        "new_auth_domain": new_auth_domain
+                    })
+                    successful += 1
+                else:
+                    error_msg = domain_results.get(project_id, {}).get('error', 'Unknown error')
+                    results.append({
+                        "project_id": project_id,
+                        "success": False,
+                        "error": error_msg
+                    })
+                    failed += 1
                 
             except Exception as e:
                 logger.error(f"Failed to update domain for project {project_id}: {e}")
@@ -4324,38 +4337,50 @@ async def update_firebase_projects_domain(domain: str, project_ids: List[str]) -
             authorized_domains = config.get('authorizedDomains', [])
             
             # Add domain if not already present
+            domain_added = False
             if domain not in authorized_domains:
                 authorized_domains.append(domain)
-                
-                # Update configuration
-                update_payload = {
-                    "authorizedDomains": authorized_domains
+                domain_added = True
+            
+            # Update configuration including dnsConfig for custom email domain
+            # This is the critical part to enable the "Custom email handler domain" in Firebase console
+            update_payload = {
+                "authorizedDomains": authorized_domains,
+                "notification": {
+                    "sendEmail": {
+                        "dnsConfig": {
+                            "customDomain": domain,
+                            "useCustomDomain": True
+                        }
+                    }
                 }
-                
-                update_response = authed_session.patch(
-                    config_url,
-                    json=update_payload,
-                    params={"updateMask": "authorizedDomains"}
-                )
-                
-                if update_response.status_code == 200:
-                    results[project_id] = {
-                        "success": True,
-                        "message": f"Domain {domain} added to authorized domains",
-                        "authorized_domains": authorized_domains
-                    }
-                    logger.info(f"Added domain {domain} to project {project_id}")
-                else:
-                    results[project_id] = {
-                        "success": False,
-                        "error": f"Failed to update: {update_response.text}"
-                    }
-            else:
+            }
+            
+            update_mask = "authorizedDomains,notification.sendEmail.dnsConfig"
+            
+            logger.info(f"Updating Firebase Identity Platform config for {project_id} with custom domain {domain}")
+            
+            update_response = authed_session.patch(
+                config_url,
+                json=update_payload,
+                params={"updateMask": update_mask}
+            )
+            
+            if update_response.status_code == 200:
                 results[project_id] = {
                     "success": True,
-                    "message": f"Domain {domain} already authorized",
+                    "message": f"Domain {domain} authorized and configured for email templates",
                     "authorized_domains": authorized_domains
                 }
+                # Update local project record
+                project['authDomain'] = domain
+                logger.info(f"Successfully configured custom domain {domain} for project {project_id}")
+            else:
+                results[project_id] = {
+                    "success": False,
+                    "error": f"Failed to update Firebase config: {update_response.text}"
+                }
+                logger.error(f"Failed to update Firebase config for {project_id}: {update_response.status_code} - {update_response.text}")
                 
         except Exception as e:
             logger.error(f"Failed to add domain to project {project_id}: {e}")

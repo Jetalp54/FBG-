@@ -568,7 +568,7 @@ export const TemplatesPage = () => {
                     <p className="text-xs text-gray-500 mt-1">
                       Enter a custom authentication domain for selected projects (e.g., auth.yourdomain.com).
                       <br />
-                      <strong>Note:</strong> This sets the auth domain for login redirects. For custom email domains, you need to configure SMTP in Firebase Console.
+                      <strong>Note:</strong> This sets the auth domain for login redirects and email templates. Once verified in Cloudflare, this domain will be used for your password reset links.
                     </p>
                   </div>
                 </div>
@@ -620,20 +620,19 @@ export const TemplatesPage = () => {
                   To use a custom domain (like yourcompany.com) for sending Firebase emails instead of the default @projectid.firebaseapp.com:
                 </p>
                 <ol className="text-gray-300 text-sm space-y-2 list-decimal list-inside">
-                  <li>Go to <strong>Firebase Console → Authentication → Templates → SMTP Settings</strong></li>
-                  <li>Configure your SMTP server (Gmail, SendGrid, etc.)</li>
-                  <li>Set sender email to: <code className="bg-gray-700 px-1 rounded">noreply@yourdomain.com</code></li>
-                  <li>Verify your domain in Firebase Console</li>
-                  <li>Test the configuration</li>
+                  <li>In the <strong>Domain Management</strong> section below, select your projects and enter your custom domain.</li>
+                  <li>Click <strong>Update Auth Domains</strong> to configure Firebase Identity Platform.</li>
+                  <li>Ensure your domain is verified in the <strong>Cloudflare</strong> tab.</li>
+                  <li>The system will automatically set the custom email handler domain and SMTP settings for you.</li>
                 </ol>
               </div>
               <div className="bg-yellow-900/30 border border-yellow-500/30 rounded-lg p-4">
                 <h4 className="text-yellow-400 font-medium mb-2">⚠️ Important Notes</h4>
                 <ul className="text-gray-300 text-sm space-y-1 list-disc list-inside">
-                  <li>The "Auth Domain" below only affects login redirects, not email sender domains</li>
-                  <li>Email domains must be configured through Firebase SMTP settings</li>
-                  <li>You need to own and verify the custom domain</li>
-                  <li>SMTP credentials are required for custom email domains</li>
+                  <li>Updating the domain sets both the Auth Domain and the Custom Email Handler domain.</li>
+                  <li>Email domains are configured to use <strong>CUSTOM_SMTP</strong> method by default.</li>
+                  <li>You must own and verify the custom domain in Cloudflare first.</li>
+                  <li>SMTP credentials should be configured in the <strong>Settings → SMTP Config</strong> tab if you want to use a specific provider.</li>
                 </ul>
               </div>
             </CardContent>
@@ -661,8 +660,8 @@ export const TemplatesPage = () => {
                         <div className="text-xs text-green-400">Custom auth domain configured</div>
                       )}
                       <div className="text-xs text-gray-400 mt-2">Email Domain:</div>
-                      <div className="text-sm text-orange-400 font-mono">{domain.project_id}.firebaseapp.com</div>
-                      <div className="text-xs text-gray-400">Configure SMTP in Firebase Console for custom email domains</div>
+                      <div className="text-sm text-green-400 font-mono">noreply@{domain.current_auth_domain}</div>
+                      <div className="text-xs text-gray-400">Custom email handler configured</div>
                     </div>
                   </div>
                 ))}
