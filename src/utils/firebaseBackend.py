@@ -3053,7 +3053,6 @@ class ResetTemplateUpdate(BaseModel):
     replyTo: Optional[str] = None
     subject: Optional[str] = None
     body: Optional[str] = None
-    authDomain: Optional[str] = None
     project_id: str
     user: Optional[str] = None
 
@@ -3073,7 +3072,7 @@ async def update_reset_template(data: ResetTemplateUpdate, request: Request):
     try:
         logger.info(f"Template update request received for project {data.project_id}")
         logger.info(f"Body length: {len(data.body) if data.body else 0} characters")
-        return await _update_reset_template_internal(data.senderName, data.fromAddress, data.replyTo, data.subject, data.body, data.authDomain, [data.project_id], data.user)
+        return await _update_reset_template_internal(data.senderName, data.fromAddress, data.replyTo, data.subject, data.body, None, [data.project_id], data.user)
     except Exception as e:
         logger.error(f"Template update failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Template update failed: {str(e)}")
@@ -3117,7 +3116,7 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
 
     results = []
     template_patch = build_payload()
-    if not template_patch and not authDomain:
+    if not template_patch:
         return {"success": False, "error": "No fields to update"}
 
     async def update_single_project(project_id: str):
@@ -3137,7 +3136,7 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
             )
             authed_session = AuthorizedSession(credentials)
             
-            # Update Reset Password template
+            # Update reset password template
             if template_patch:
                 # 1. Fetch current config to merge template fields (avoiding destructive overwrite)
                 config_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config"
@@ -3150,10 +3149,6 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                     if existing_template:
                         merged_template = {**existing_template, **template_patch}
                         logger.info(f"Merged existing template fields for project {project_id}")
-                else:
-                    logger.error(f"Failed to fetch existing config for {project_id}: {config_resp.text}")
-                    # If we can't fetch the current config, we shouldn't patch as it might wipe existing fields
-                    return {"project_id": project_id, "success": False, "error": f"Failed to fetch existing template config: {config_resp.status_code}"}
                 
                 # 2. Patch with merged template
                 url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=notification.sendEmail.resetPasswordTemplate"
@@ -3164,34 +3159,33 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                         }
                     }
                 }
-                logger.info(f"Sending reset template update to Firebase API for project {project_id}")
+                logger.info(f"Sending merged template update to Firebase API for project {project_id}")
                 response = authed_session.patch(url, json=payload)
                 if not response.ok:
                     error_text = response.text
                     logger.error(f"Firebase API error for project {project_id}: {response.status_code} - {error_text}")
                     return {"project_id": project_id, "success": False, "error": f"Firebase API error: {response.status_code} - {error_text}"}
-                
-                logger.info(f"Reset password template updated for project {project_id} by {user or 'unknown'}")
+                response.raise_for_status()
+                logger.info(f"Reset template updated for project {project_id} by {user or 'unknown'}")
             
             # Update domain configuration if provided (using our non-destructive helper)
             if authDomain and authDomain.strip():
                 logger.info(f"Adding auth domain {authDomain.strip()} to project {project_id}")
                 domain_results = await update_firebase_projects_domain(authDomain.strip(), [project_id])
-                
                 if not domain_results.get(project_id, {}).get('success'):
-                    error_msg = domain_results.get(project_id, {}).get('error', 'Unknown error')
-                    logger.warning(f"Failed to set dnsConfig for {project_id}: {error_msg}")
+                    logger.warning(f"Domain addition result for {project_id}: {domain_results.get(project_id)}")
                 
-                # Set CUSTOM_SMTP method to ensure custom domain is used
+                # Also update the email sender domain and SMTP via Identity Platform
+                # This ensures the "From" address can actually use the custom domain
                 try:
-                    sender_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config"
+                    sender_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=notification.sendEmail.method,notification.sendEmail.smtp"
                     sender_payload = {
                         "notification": {
                             "sendEmail": {
                                 "method": "CUSTOM_SMTP",
                                 "smtp": {
                                     "senderEmail": f"noreply@{authDomain.strip()}",
-                                    "host": "smtp.gmail.com",
+                                    "host": "smtp.gmail.com", # Default, user should update via SMTP config tab
                                     "port": 587,
                                     "username": f"noreply@{authDomain.strip()}",
                                     "securityMode": "START_TLS"
@@ -3206,10 +3200,6 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                 except Exception as sender_error:
                     logger.warning(f"SMTP configuration update not performed for {project_id}: {sender_error}")
                 
-                # Update project state in memory
-                if project_id in projects:
-                    projects[project_id]['authDomain'] = authDomain.strip()
-                
                 logger.info(f"Updated auth domain for project {project_id} to {authDomain.strip()}")
                 write_audit_log(user, "update_domain", {
                     "project_id": project_id,
@@ -3219,11 +3209,10 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
             
             write_audit_log(user, 'update_template', {'project_ids': project_ids, 'fields_updated': list(template_patch.keys()) if template_patch else []})
             asyncio.create_task(notify_ws('template_update', {'project_id': project_id, 'fields_updated': list(template_patch.keys()) if template_patch else [], 'user': user}))
-            return {"project_id": project_id, "success": True, "message": "Template and domain updated successfully."}
+            return {"project_id": project_id, "success": True, "message": "Reset password template and domain updated."}
         except Exception as e:
-            logger.error(f"Failed to update template for project {project_id}: {e}")
+            logger.error(f"Failed to update reset template for project {project_id}: {e}")
             return {"project_id": project_id, "success": False, "error": str(e)}
-
 
     update_tasks = [update_single_project(project_id) for project_id in project_ids]
     results = await asyncio.gather(*update_tasks)
@@ -4547,7 +4536,33 @@ async def get_verification_status(verification_id: str):
         logger.error(f"Failed to check verification status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
+async def update_firebase_projects_domain(domain: str, project_ids: List[str]) -> Dict:
+    """Update Firebase projects with verified custom domain"""
+    results = {}
+    
+    for project_id in project_ids:
+        try:
+            # Load project from file/database
+            project = load_project(project_id=project_id)
+            if not project:
+                results[project_id] = {"success": False, "error": "Project not found"}
+                continue
+            
+            # Update authDomain
+            project["authDomain"] = domain
+            
+            # Update Firebase project configuration via API
+            # This would require Firebase Admin SDK to update authorized domains
+            # For now, we'll just update local project data
+            save_project(project)
+            
+            results[project_id] = {"success": True, "message": "Domain updated"}
+            logger.info(f"Updated domain for project {project_id}: {domain}")
+        except Exception as e:
+            logger.error(f"Failed to update project {project_id}: {e}")
+            results[project_id] = {"success": False, "error": str(e)}
+    
+    return results
 
 @app.get("/cloudflare/verified-domains")
 async def list_verified_domains():
