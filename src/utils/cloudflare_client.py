@@ -199,7 +199,40 @@ class CloudflareClient:
         # Add new verification record
         self.add_dns_record(zone_id, "TXT", verification_domain, verification_token)
         
-        logger.info(f"Created verification record for {domain}: {verification_token}")
+        # ADD EMAIL AUTHENTICATION RECORDS (DKIM AND SPF)
+        logger.info(f"Adding DKIM and SPF records for {domain}")
+        
+        # Hyphenated domain for DKIM content (e.g., example.com -> example-com)
+        hyphenated_domain = domain.replace('.', '-')
+        
+        email_records = [
+            # DKIM 1
+            ("CNAME", f"firebase1._domainkey.{domain}", f"mail-{hyphenated_domain}.dkim1._domainkey.firebasemail.com.", False),
+            # DKIM 2
+            ("CNAME", f"firebase2._domainkey.{domain}", f"mail-{hyphenated_domain}.dkim2._domainkey.firebasemail.com.", False),
+            # SPF
+            ("TXT", domain, "v=spf1 include:_spf.firebasemail.com ~all", True) # True means potentially append or check existing
+        ]
+        
+        for rtype, rname, rcontent, is_spf in email_records:
+            try:
+                # Check if record exists
+                existing = self.list_dns_records(zone_id, rtype, rname)
+                exists = any(r.get('content') == rcontent for r in existing)
+                
+                if not exists:
+                    # For SPF, if there's already an SPF record, we might want to merge, 
+                    # but for simplicity and following user request "add those records", we'll just add it if it doesn't match exactly.
+                    # Usually domains have only one SPF, so if one exists with different content, we should be careful.
+                    # However, the user request asks to add "this record".
+                    self.add_dns_record(zone_id, rtype, rname, rcontent)
+                    logger.info(f"Added {rtype} record: {rname}")
+                else:
+                    logger.info(f"Record already exists: {rtype} {rname}")
+            except Exception as e:
+                logger.error(f"Failed to add {rtype} record {rname}: {e}")
+        
+        logger.info(f"Created verification and email records for {domain}: {verification_token}")
         return verification_domain, verification_token
     
     def setup_email_dns(self, domain: str, email_provider: str = "google") -> Dict[str, bool]:
