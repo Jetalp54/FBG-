@@ -170,13 +170,13 @@ class CloudflareClient:
         
         return False, "Verification timeout - DNS propagation may take longer"
     
-    def create_verification_record(self, domain: str, project_name: str) -> Tuple[str, str]:
+    def create_verification_record(self, domain: str, project_id: str) -> Tuple[str, str]:
         """
         Create a verification TXT record for a domain
         Returns: (record_name, verification_token)
         """
         # The verification content as requested
-        verification_token = f"firebase={project_name}"
+        verification_token = f"firebase={project_id}"
         
         # Use the domain itself for the record name
         verification_domain = domain

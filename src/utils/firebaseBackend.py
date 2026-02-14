@@ -4396,10 +4396,8 @@ async def initiate_domain_verification(request: DomainVerificationRequest):
         if project_id not in projects:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
         
-        project_name = projects[project_id].get('name', project_id)
-        
-        # Generate verification record
-        verification_domain, verification_token = cf_client.create_verification_record(domain, project_name)
+        # Generate verification record using Project ID as requested
+        verification_domain, verification_token = cf_client.create_verification_record(domain, project_id)
         
         # Store verification status
         verification_id = hashlib.md5(f"{domain}:{datetime.now()}".encode()).hexdigest()[:16]
