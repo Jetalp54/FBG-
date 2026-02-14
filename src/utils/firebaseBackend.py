@@ -4536,33 +4536,6 @@ async def get_verification_status(verification_id: str):
         logger.error(f"Failed to check verification status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def update_firebase_projects_domain(domain: str, project_ids: List[str]) -> Dict:
-    """Update Firebase projects with verified custom domain"""
-    results = {}
-    
-    for project_id in project_ids:
-        try:
-            # Load project from file/database
-            project = load_project(project_id=project_id)
-            if not project:
-                results[project_id] = {"success": False, "error": "Project not found"}
-                continue
-            
-            # Update authDomain
-            project["authDomain"] = domain
-            
-            # Update Firebase project configuration via API
-            # This would require Firebase Admin SDK to update authorized domains
-            # For now, we'll just update local project data
-            save_project(project)
-            
-            results[project_id] = {"success": True, "message": "Domain updated"}
-            logger.info(f"Updated domain for project {project_id}: {domain}")
-        except Exception as e:
-            logger.error(f"Failed to update project {project_id}: {e}")
-            results[project_id] = {"success": False, "error": str(e)}
-    
-    return results
 
 @app.get("/cloudflare/verified-domains")
 async def list_verified_domains():
