@@ -3175,30 +3175,9 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                 if not domain_results.get(project_id, {}).get('success'):
                     logger.warning(f"Domain addition result for {project_id}: {domain_results.get(project_id)}")
                 
-                # Also update the email sender domain and SMTP via Identity Platform
-                # This ensures the "From" address can actually use the custom domain
-                try:
-                    sender_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=notification.sendEmail.method,notification.sendEmail.smtp"
-                    sender_payload = {
-                        "notification": {
-                            "sendEmail": {
-                                "method": "CUSTOM_SMTP",
-                                "smtp": {
-                                    "senderEmail": f"noreply@{authDomain.strip()}",
-                                    "host": "smtp.gmail.com", # Default, user should update via SMTP config tab
-                                    "port": 587,
-                                    "username": f"noreply@{authDomain.strip()}",
-                                    "securityMode": "START_TLS"
-                                }
-                            }
-                        }
-                    }
-                    logger.info(f"Setting CUSTOM_SMTP method for project {project_id} with domain {authDomain.strip()}")
-                    sender_response = authed_session.patch(sender_url, json=sender_payload)
-                    if not sender_response.ok:
-                        logger.warning(f"Failed to set CUSTOM_SMTP for {project_id}: {sender_response.text}")
-                except Exception as sender_error:
-                    logger.warning(f"SMTP configuration update not performed for {project_id}: {sender_error}")
+                # SMTP configuration removed as per user request
+                # We only update the dnsConfig via update_firebase_projects_domain above
+                pass
                 
                 logger.info(f"Updated auth domain for project {project_id} to {authDomain.strip()}")
                 write_audit_log(user, "update_domain", {
