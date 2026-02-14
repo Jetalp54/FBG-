@@ -9,16 +9,29 @@ from google.auth.transport.requests import AuthorizedSession
 def verify_config(project_id):
     print(f"Checking config for project: {project_id}")
     
-    # Try to find a service account file
-    sa_file = None
-    for f in os.listdir('.'):
-        if f.endswith('.json') and 'service' in f and project_id in f:
-            sa_file = f
-            break
+    # Try to load app_users.json to find the service account path
+    try:
+        with open('app_users.json', 'r') as f:
+            app_users = json.load(f)
             
-    if not sa_file:
-        print(f"Could not find likely service account file for {project_id} in {os.getcwd()}")
-        return
+        project_config = next((p for p in app_users if p.get('id') == project_id), None)
+        
+        if project_config and project_config.get('serviceAccount'):
+            sa_file = project_config.get('serviceAccount')
+            if not os.path.exists(sa_file):
+                # Try relative to current dir if absolute fails
+                if os.path.exists(os.path.join(os.getcwd(), sa_file)):
+                    sa_file = os.path.join(os.getcwd(), sa_file)
+                else:
+                    print(f"Service account path {sa_file} from app_users.json not found.")
+                    sa_file = None
+        else:
+             print(f"Project {project_id} not found in app_users.json or has no serviceAccount set.")
+             
+    except Exception as e:
+        print(f"Failed to read app_users.json: {e}")
+        # Fallback to searching
+
 
     print(f"Using service account candidate: {sa_file}")
     
