@@ -1094,7 +1094,7 @@ class UserImport(BaseModel):
 class CampaignCreate(BaseModel):
     name: str
     projectIds: List[str]
-    selectedUsers: Dict[str, List[str]]
+    selectedUsers: Optional[Dict[str, List[str]]] = None
     batchSize: int = 50
     workers: int = 5
     template: Optional[str] = None
@@ -2245,19 +2245,38 @@ async def send_campaign(request: Request):
             
             async def process_project_turbo(proj):
                 proj_id = str(proj.get('projectId', ''))
-                users = [str(uid) for uid in proj.get('userIds', []) if uid]
+                specific_users = proj.get('userIds', [])
                 
                 if proj_id not in firebase_apps or proj_id not in pyrebase_apps:
                     logger.error(f"Project {proj_id} not initialized")
-                    return {'project_id': proj_id, 'successful': 0, 'failed': len(users), 'total': len(users)}
+                    return {'project_id': proj_id, 'successful': 0, 'failed': len(specific_users), 'total': len(specific_users)}
                 
                 # Get Firebase instances
                 firebase_app = firebase_apps[proj_id]
                 pyrebase_auth = pyrebase_apps[proj_id].auth()
                 
+                # List of users to process
+                users_to_process = []
+                
+                if specific_users and len(specific_users) > 0:
+                    users_to_process = [str(uid) for uid in specific_users if uid]
+                else:
+                    # FETCH ALL USERS IN BATCHES
+                    logger.info(f"[{proj_id}] No specific users provided, fetching ALL users for turbo mode")
+                    try:
+                        page = auth.list_users(app=firebase_app, max_results=1000)
+                        while page:
+                            users_to_process.extend([user.uid for user in page.users])
+                            if not page.next_page_token:
+                                break
+                            page = auth.list_users(app=firebase_app, max_results=1000, page_token=page.next_page_token)
+                    except Exception as e:
+                        logger.error(f"[{proj_id}] Failed to list users: {e}")
+                        return {'project_id': proj_id, 'successful': 0, 'failed': 0, 'total': 0, 'error': str(e)}
+
                 # Get user emails
                 user_emails = {}
-                for uid in users:
+                for uid in users_to_process:
                     try:
                         user = auth.get_user(uid, app=firebase_app)
                         if user.email:
@@ -2343,19 +2362,38 @@ async def send_campaign(request: Request):
             
             async def process_project_throttled(proj):
                 proj_id = str(proj.get('projectId', ''))
-                users = [str(uid) for uid in proj.get('userIds', []) if uid]
+                specific_users = proj.get('userIds', [])
                 
                 if proj_id not in firebase_apps or proj_id not in pyrebase_apps:
                     logger.error(f"Project {proj_id} not initialized")
-                    return {'project_id': proj_id, 'successful': 0, 'failed': len(users), 'total': len(users)}
+                    return {'project_id': proj_id, 'successful': 0, 'failed': len(specific_users), 'total': len(specific_users)}
                 
                 # Get Firebase instances
                 firebase_app = firebase_apps[proj_id]
                 pyrebase_auth = pyrebase_apps[proj_id].auth()
                 
+                # List of users to process
+                users_to_process = []
+                
+                if specific_users and len(specific_users) > 0:
+                    users_to_process = [str(uid) for uid in specific_users if uid]
+                else:
+                    # FETCH ALL USERS IN BATCHES
+                    logger.info(f"[{proj_id}] No specific users provided, fetching ALL users for throttled mode")
+                    try:
+                        page = auth.list_users(app=firebase_app, max_results=1000)
+                        while page:
+                            users_to_process.extend([user.uid for user in page.users])
+                            if not page.next_page_token:
+                                break
+                            page = auth.list_users(app=firebase_app, max_results=1000, page_token=page.next_page_token)
+                    except Exception as e:
+                        logger.error(f"[{proj_id}] Failed to list users: {e}")
+                        return {'project_id': proj_id, 'successful': 0, 'failed': 0, 'total': 0, 'error': str(e)}
+
                 # Get user emails
                 user_emails = {}
-                for uid in users:
+                for uid in users_to_process:
                     try:
                         user = auth.get_user(uid, app=firebase_app)
                         if user.email:
@@ -4349,9 +4387,19 @@ async def initiate_domain_verification(request: DomainVerificationRequest):
         # Validate domain format
         if not domain or '.' not in domain:
             raise HTTPException(status_code=400, detail="Invalid domain format")
+            
+        if not request.project_ids:
+            raise HTTPException(status_code=400, detail="At least one project must be selected")
+        
+        # Get project name from the first project ID
+        project_id = request.project_ids[0]
+        if project_id not in projects:
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+        
+        project_name = projects[project_id].get('name', project_id)
         
         # Generate verification record
-        verification_domain, verification_token = cf_client.create_verification_record(domain)
+        verification_domain, verification_token = cf_client.create_verification_record(domain, project_name)
         
         # Store verification status
         verification_id = hashlib.md5(f"{domain}:{datetime.now()}".encode()).hexdigest()[:16]

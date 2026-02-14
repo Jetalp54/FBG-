@@ -170,33 +170,36 @@ class CloudflareClient:
         
         return False, "Verification timeout - DNS propagation may take longer"
     
-    def create_verification_record(self, domain: str) -> Tuple[str, str]:
+    def create_verification_record(self, domain: str, project_name: str) -> Tuple[str, str]:
         """
         Create a verification TXT record for a domain
         Returns: (record_name, verification_token)
         """
-        # Generate verification token
-        timestamp = datetime.now().isoformat()
-        token_input = f"{domain}:{timestamp}:{os.urandom(16).hex()}"
-        verification_token = hashlib.sha256(token_input.encode()).hexdigest()[:32]
+        # The verification content as requested
+        verification_token = f"firebase={project_name}"
         
-        # Create verification subdomain
-        verification_domain = f"_firebase-verify.{domain}"
+        # Use the domain itself for the record name
+        verification_domain = domain
         
         # Get zone ID
         zone_id = self.get_zone_id(domain)
         if not zone_id:
             raise Exception(f"Could not find Cloudflare zone for domain: {domain}")
         
-        # Check if verification record already exists
+        # Check for existing records with same name and content
         existing_records = self.list_dns_records(zone_id, "TXT", verification_domain)
         for record in existing_records:
-            self.delete_dns_record(zone_id, record['id'])
+            if record.get('content') == verification_token:
+                logger.info(f"Verification record already exists for {domain}")
+                return verification_domain, verification_token
+            # Optionally delete other TXT records with same name if they are firebase verifications
+            if record.get('content', '').startswith('firebase='):
+                self.delete_dns_record(zone_id, record['id'])
         
         # Add new verification record
         self.add_dns_record(zone_id, "TXT", verification_domain, verification_token)
         
-        logger.info(f"Created verification record for {domain}")
+        logger.info(f"Created verification record for {domain}: {verification_token}")
         return verification_domain, verification_token
     
     def setup_email_dns(self, domain: str, email_provider: str = "google") -> Dict[str, bool]:
