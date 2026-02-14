@@ -4985,63 +4985,6 @@ async def get_verification_status(verification_id: str):
         **verification
     }
 
-async def update_firebase_projects_domain(domain: str, project_ids: List[str]) -> Dict:
-    """Update Firebase projects with authorized domain"""
-    results = {"successful": 0, "failed": 0, "details": []}
-    
-    for project_id in project_ids:
-        try:
-            # Load project
-            project = next((p for p in projects if p['id'] == project_id), None)
-            if not project:
-                results["failed"] += 1
-                results["details"].append({"project_id": project_id, "success": False, "error": "Project not found"})
-                continue
-            
-            # Update authDomain
-            project['authDomain'] = domain
-            
-            # Update Firebase Auth configuration
-            try:
-                cred_path = project.get('serviceAccount')
-                if cred_path and os.path.exists(cred_path):
-                    cred = credentials.Certificate(cred_path)
-                    scoped_credentials = cred.with_scopes([
-                        'https://www.googleapis.com/auth/cloud-platform',
-                        'https://www.googleapis.com/auth/identitytoolkit'
-                    ])
-                    authed_session = AuthorizedSession(scoped_credentials)
-                    
-                    # Update authorized domains
-                    url = f"https://identitytoolkit.googleapis.com/admin/v2/projects/{project_id}/config"
-                    config_data = {
-                        "authorizedDomains": [domain, f"{project_id}.firebaseapp.com"],
-                    }
-                    
-                    response = authed_session.patch(url, json=config_data, params={"updateMask": "authorizedDomains"})
-                    
-                    if response.status_code == 200:
-                        logger.info(f"Updated Firebase Auth domain for {project_id}: {domain}")
-                        results["successful"] += 1
-                        results["details"].append({"project_id": project_id, "success": True})
-                    else:
-                        raise Exception(f"API returned {response.status_code}: {response.text}")
-            
-            except Exception as e:
-                logger.error(f"Failed to update Firebase Auth for {project_id}: {e}")
-                results["failed"] += 1
-                results["details"].append({"project_id": project_id, "success": False, "error": str(e)})
-        
-        except Exception as e:
-            logger.error(f"Failed to update project {project_id}: {e}")
-            results["failed"] += 1
-            results["details"].append({"project_id": project_id, "success": False, "error": str(e)})
-    
-    # Save projects
-    save_projects_to_file()
-    
-    return results
-
 @app.get("/cloudflare/verified-domains")
 async def list_verified_domains():
     """List all verified domains"""
