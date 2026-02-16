@@ -2437,95 +2437,93 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
     pyrebase_app = pyrebase_apps[project_id]
     pyrebase_auth = pyrebase_app.auth()
     
-    # Get user emails efficiently
-    user_emails = {}
-    logger.info(f"[{project_id}] Looking up emails for {len(user_ids)} users")
-    
-    try:
-        for uid in user_ids:
-            try:
-                user = auth.get_user(uid, app=firebase_app)
-                if uid is not None and user.email is not None:
-                    user_emails[str(uid)] = str(user.email)
-                    logger.debug(f"[{project_id}] Found email for user {uid}: {user.email}")
-                else:
-                    logger.warning(f"[{project_id}] User {uid} has no email")
-            except Exception as e:
-                logger.error(f"[{project_id}] Failed to get user {uid}: {e}")
-                continue
-    except Exception as e:
-        logger.error(f"[{project_id}] Failed to get user emails: {e}")
-    
-    email_list = list(user_emails.values())
-    logger.info(f"[{project_id}] Found {len(email_list)} valid emails out of {len(user_ids)} users")
-    
     # Optimize worker configuration
     if workers is None:
-        workers = 10  # Increased default workers
-    
+        workers = 50  # Increased default workers for Turbo
     try:
         workers = int(workers)
     except Exception:
-        workers = 10
+        workers = 50
     
-    cpu_count = os.cpu_count() or 1
-    
+    # Turbo/Lightning mode scaling
     if lightning:
-        max_workers = min(cpu_count * 4, 50)  # More aggressive for lightning mode
+        # Allow up to 200 workers for turbo mode if CPU allows, or static high number
+        # 10k emails / 60s = 166 req/s.  With 200 workers, each needs to do < 1 req/s. Very doable.
+        max_workers = 200 
     else:
-        max_workers = min(workers, 30)  # Cap at 30 for normal mode
+        max_workers = min(workers, 50)
+
+    logger.info(f"[{project_id}] Starting optimized lookup and send with {max_workers} workers.")
+
+    # 1. Optimized Batch User Lookup
+    user_emails = {} # map uid -> email
     
-    try:
-        max_workers = int(max_workers)
-    except Exception:
-        max_workers = 10
+    # Chunk user_ids into batches of 100 (Firebase limit for get_users)
+    chunks = [user_ids[i:i + 100] for i in range(0, len(user_ids), 100)]
     
-    if not isinstance(max_workers, int) or max_workers < 1:
-        max_workers = 1
-    
-    logger.info(f"[{project_id}] Starting optimized parallel send with {max_workers} workers for {len(email_list)} emails.")
-    
+    def fetch_batch_emails(batch_uids):
+        found = {}
+        try:
+            # Construct identifiers for get_users
+            identifiers = [auth.UserIdentifier(uid=uid) for uid in batch_uids]
+            result = auth.get_users(identifiers, app=firebase_app)
+            for user in result.users:
+                if user.email:
+                    found[user.uid] = user.email
+            # Log missing users?
+            if len(found) < len(batch_uids):
+                logger.debug(f"[{project_id}] Batch lookup found {len(found)}/{len(batch_uids)} users")
+        except Exception as e:
+            logger.error(f"[{project_id}] Batch user lookup failed: {e}")
+        return found
+
+    # Parallelize the lookup itself (optional but faster for 10k users = 100 batches)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as lookup_executor:
+        future_to_batch = {lookup_executor.submit(fetch_batch_emails, chunk): chunk for chunk in chunks}
+        for future in concurrent.futures.as_completed(future_to_batch):
+            try:
+                batch_result = future.result()
+                user_emails.update(batch_result)
+            except Exception as e:
+                logger.error(f"[{project_id}] Lookup future failed: {e}")
+
+    email_list = list(user_emails.items()) # List of (uid, email) tuples
+    logger.info(f"[{project_id}] Resolved {len(email_list)} emails from {len(user_ids)} UIDs")
+
     # --- CAMPAIGN TRACKING ---
     create_campaign_result(campaign_id, project_id, len(user_emails))
     
-    def fire_email(email):
-        # Find user_id for this email
-        user_id = None
-        for uid, em in user_emails.items():
-            if em == email:
-                user_id = uid
-                break
-        
+    def fire_email_task(item):
+        uid, email = item
         try:
-            logger.info(f"[{project_id}] Sending password reset email to: {email}")
+            # logger.info(f"[{project_id}] Sending to: {email}") # Reduce logging for speed?
             pyrebase_auth.send_password_reset_email(str(email))
-            logger.info(f"[{project_id}] Successfully sent to {email}")
-            update_campaign_result(campaign_id, project_id, True, user_id=user_id, email=email)
+            update_campaign_result(campaign_id, project_id, True, user_id=uid, email=email)
             return True
         except Exception as e:
-            logger.error(f"[ERROR][{project_id}] Failed to send to {email}: {str(e)}")
-            update_campaign_result(campaign_id, project_id, False, user_id=user_id, email=email, error=str(e))
+            err_str = str(e)
+            # Don't log full stack trace for every failure to keep logs clean
+            logger.error(f"[ERROR][{project_id}] Failed {email}: {err_str[:100]}") 
+            update_campaign_result(campaign_id, project_id, False, user_id=uid, email=email, error=err_str)
             return False
     
-    # Filter out empty strings from email_list
-    email_list = [e for e in email_list if e]
-    
-    # Process emails in batches for better performance
-    batch_size = max(1, len(email_list) // max_workers)
+    # Process emails in batches (or rather, just concurrently)
     successful_sends = 0
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all emails for processing
-        future_to_email = {executor.submit(fire_email, email): email for email in email_list}
+        # We process 'email_list' which is now [(uid, email), ...]
+        future_to_item = {executor.submit(fire_email_task, item): item for item in email_list}
         
         # Collect results as they complete
-        for future in concurrent.futures.as_completed(future_to_email):
-            email = future_to_email[future]
+        for future in concurrent.futures.as_completed(future_to_item):
+            item = future_to_item[future]
             try:
                 result = future.result()
                 if result:
                     successful_sends += 1
             except Exception as e:
+                uid, email = item
                 logger.error(f"[ERROR][{project_id}] Exception for {email}: {e}")
     
     logger.info(f"[{project_id}] Finished sending {len(email_list)} emails with {max_workers} workers. Successful: {successful_sends}")
