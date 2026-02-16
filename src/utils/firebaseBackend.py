@@ -2348,12 +2348,6 @@ async def start_campaign(campaign_id: str):
             'turbo_config': campaign.get('turbo_config'),
             'throttle_config': campaign.get('throttle_config'),
             'schedule_config': campaign.get('schedule_config'),
-        payload = {
-            'projects': projects_payload,
-            'sending_mode': campaign.get('sending_mode', 'turbo'),
-            'turbo_config': campaign.get('turbo_config'),
-            'throttle_config': campaign.get('throttle_config'),
-            'schedule_config': campaign.get('schedule_config'),
             'campaignId': campaign_id
         }
         logger.info(f"[{campaign_id}] Start payload prepared. Mode: {payload['sending_mode']}. Projects: {len(projects_payload)}")
