@@ -1,11 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { TestTube, Mail, Zap, CheckCircle } from 'lucide-react';
+import { TestTube, Mail, Zap, CheckCircle, Clock, X, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useEnhancedApp } from '@/contexts/EnhancedAppContext';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -16,6 +16,8 @@ export const TestCampaign = () => {
   const [testEmail, setTestEmail] = useState('');
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const [isTesting, setIsTesting] = useState(false);
+  const [savedEmails, setSavedEmails] = useState<string[]>([]);
+  const [isLoadingEmails, setIsLoadingEmails] = useState(false);
 
   // Filter projects by active profile
   const activeProjects = projects.filter(p =>
@@ -25,6 +27,55 @@ export const TestCampaign = () => {
   const activeProfileName = profiles.find(p => p.id === activeProfile)?.name || 'All Projects';
 
   const API_BASE_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:8000" : "/api";
+
+  // Load saved emails on mount
+  useEffect(() => {
+    loadSavedEmails();
+  }, []);
+
+  const loadSavedEmails = async () => {
+    try {
+      setIsLoadingEmails(true);
+      const response = await fetch(`${API_BASE_URL}/test-emails`);
+      const data = await response.json();
+      if (data && data.emails) {
+        setSavedEmails(data.emails);
+      }
+    } catch (error) {
+      console.error("Failed to load saved emails", error);
+    } finally {
+      setIsLoadingEmails(false);
+    }
+  };
+
+  const saveCurrentEmail = async (email: string) => {
+    try {
+      await fetch(`${API_BASE_URL}/test-emails`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      loadSavedEmails(); // Refresh list
+    } catch (error) {
+      console.error("Failed to save email", error);
+    }
+  };
+
+  const deleteSavedEmail = async (e: React.MouseEvent, email: string) => {
+    e.stopPropagation(); // Prevent selection
+    try {
+      await fetch(`${API_BASE_URL}/test-emails/${encodeURIComponent(email)}`, {
+        method: 'DELETE'
+      });
+      toast({
+        title: "Email Removed",
+        description: "Removed from saved list",
+      });
+      loadSavedEmails();
+    } catch (error) {
+      console.error("Failed to delete email", error);
+    }
+  };
 
   const handleProjectToggle = (projectId: string) => {
     setSelectedProjects(prev =>
@@ -42,9 +93,6 @@ export const TestCampaign = () => {
 
   const sendTestEmail = async () => {
     console.log('TestCampaign: Starting sendTestEmail function');
-    console.log('TestCampaign: API_BASE_URL =', API_BASE_URL);
-    console.log('TestCampaign: testEmail =', testEmail);
-    console.log('TestCampaign: selectedProjects =', selectedProjects);
 
     if (!testEmail.trim()) {
       toast({
@@ -71,7 +119,12 @@ export const TestCampaign = () => {
       });
       return;
     }
+
     setIsTesting(true);
+
+    // Save email for future use
+    saveCurrentEmail(testEmail);
+
     try {
       // ensure selected projects are reconnected before testing
       await Promise.all(selectedProjects.map(async (projectId) => {
@@ -86,7 +139,6 @@ export const TestCampaign = () => {
           email: testEmail,
           project_id: projectId,
         };
-        console.log('TestCampaign: Request body:', requestBody);
 
         const response = await fetch(`${API_BASE_URL}/test-reset-email`, {
           method: 'POST',
@@ -96,27 +148,21 @@ export const TestCampaign = () => {
           body: JSON.stringify(requestBody),
         });
 
-        console.log('TestCampaign: Response status:', response.status);
-        console.log('TestCampaign: Response ok:', response.ok);
-
         if (!response.ok) {
           allSuccess = false;
           const result = await response.json();
-          console.log('TestCampaign: Error response:', result);
           toast({
             title: "Test Failed",
             description: result.error || `Failed to send test email for project ${projectId}`,
             variant: "destructive",
           });
-        } else {
-          const result = await response.json();
-          console.log('TestCampaign: Success response:', result);
         }
       }
+
       if (allSuccess) {
         toast({
           title: "Test Email Sent! ✨",
-          description: `Password reset email sent to ${testEmail} for all selected projects. User was temporarily added and removed from each project.`,
+          description: `Password reset email sent to ${testEmail} for all selected projects.`,
         });
         setTestEmail('');
         setSelectedProjects([]);
@@ -159,23 +205,52 @@ export const TestCampaign = () => {
                   <li>• Temporarily adds the test email to the selected project</li>
                   <li>• Sends a password reset email to that address</li>
                   <li>• Immediately removes the user from the project</li>
-                  <li>• All happens in one quick operation</li>
                 </ul>
               </div>
             </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="testEmail" className="text-gray-300">Test Email Address</Label>
-              <Input
-                id="testEmail"
-                type="email"
-                value={testEmail}
-                onChange={(e) => setTestEmail(e.target.value)}
-                placeholder="test@example.com"
-                className="bg-gray-700 border-gray-600 text-white"
-              />
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="testEmail" className="text-gray-300">Test Email Address</Label>
+                <div className="flex gap-2 mt-1.5">
+                  <Input
+                    id="testEmail"
+                    type="email"
+                    value={testEmail}
+                    onChange={(e) => setTestEmail(e.target.value)}
+                    placeholder="test@example.com"
+                    className="bg-gray-700 border-gray-600 text-white"
+                  />
+                </div>
+              </div>
+
+              {/* Recent Emails Section */}
+              {savedEmails.length > 0 && (
+                <div>
+                  <Label className="text-gray-400 text-xs mb-2 block">Recent / Saved Emails</Label>
+                  <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto pr-2">
+                    {savedEmails.map((email) => (
+                      <Badge
+                        key={email}
+                        variant="secondary"
+                        className="cursor-pointer bg-gray-700 hover:bg-gray-600 text-gray-200 border border-gray-600 flex items-center gap-1.5 py-1 px-2"
+                        onClick={() => setTestEmail(email)}
+                      >
+                        {email}
+                        <div
+                          role="button"
+                          onClick={(e) => deleteSavedEmail(e, email)}
+                          className="hover:bg-gray-500 rounded-full p-0.5 transition-colors"
+                        >
+                          <X className="w-3 h-3 text-gray-400 hover:text-white" />
+                        </div>
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div>

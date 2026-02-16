@@ -1613,37 +1613,51 @@ async def load_users(project_id: str, limit: Optional[int] = 1000, page_token: O
 
         result_users = []
         next_token: Optional[str] = None
-        max_to_collect = max(1, min(int(limit or 1000), 1000))  # Firebase returns up to 1000 per page
+        max_to_collect = int(limit) if limit else 1000000 # Effectively unlimited default or user specified
         search_lc = (search or "").strip().lower()
 
-        # Collect up to 'limit' users from the current page only to prevent huge loads
-        for user in page.users:
-            if len(result_users) >= max_to_collect:
+        # Collect users across multiple pages until limit is reached
+        while len(result_users) < max_to_collect:
+            for user in page.users:
+                if len(result_users) >= max_to_collect:
+                    break
+                    
+                if search_lc:
+                    email_lc = (user.email or "").lower()
+                    name_lc = (user.display_name or "").lower()
+                    if search_lc not in email_lc and search_lc not in name_lc:
+                        continue
+                        
+                created_at = None
+                if user.user_metadata and user.user_metadata.creation_timestamp:
+                    try:
+                        if hasattr(user.user_metadata.creation_timestamp, 'timestamp'):
+                            created_at = datetime.fromtimestamp(user.user_metadata.creation_timestamp.timestamp()).isoformat()
+                        else:
+                            created_at = str(user.user_metadata.creation_timestamp)
+                    except Exception:
+                        created_at = None
+                result_users.append({
+                    "uid": user.uid,
+                    "email": user.email or "",
+                    "displayName": user.display_name,
+                    "disabled": user.disabled,
+                    "emailVerified": user.email_verified,
+                    "createdAt": created_at,
+                })
+            
+            # Check for next page
+            if not page.next_page_token or len(result_users) >= max_to_collect:
                 break
-            if search_lc:
-                email_lc = (user.email or "").lower()
-                name_lc = (user.display_name or "").lower()
-                if search_lc not in email_lc and search_lc not in name_lc:
-                    continue
-            created_at = None
-            if user.user_metadata and user.user_metadata.creation_timestamp:
-                try:
-                    if hasattr(user.user_metadata.creation_timestamp, 'timestamp'):
-                        created_at = datetime.fromtimestamp(user.user_metadata.creation_timestamp.timestamp()).isoformat()
-                    else:
-                        created_at = str(user.user_metadata.creation_timestamp)
-                except Exception:
-                    created_at = None
-            result_users.append({
-                "uid": user.uid,
-                "email": user.email or "",
-                "displayName": user.display_name,
-                "disabled": user.disabled,
-                "emailVerified": user.email_verified,
-                "createdAt": created_at,
-            })
+                
+            # Fetch next page
+            try:
+                page = auth.list_users(app=app, page_token=page.next_page_token)
+            except Exception as e:
+                logger.error(f"Failed to fetch next page of users: {e}")
+                break
 
-        next_token = page.next_page_token if hasattr(page, 'next_page_token') else None
+        next_token = page.next_page_token if hasattr(page, 'next_page_token') and len(result_users) < max_to_collect else None
         return {"users": result_users, "nextPageToken": next_token}
     except HTTPException as he:
         raise he
@@ -5629,6 +5643,79 @@ async def distribute_data_list(list_id: str, distribute: DataListDistribute):
         logger.error(f"Failed to distribute data list: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to distribute data list: {str(e)}")
 
+
+# --- Test Email Management ---
+TEST_EMAILS_FILE = "test_emails.json"
+
+@app.get("/test-emails")
+async def get_test_emails():
+    """Get list of saved test emails"""
+    try:
+        data = {"emails": []}
+        if os.path.exists(TEST_EMAILS_FILE):
+            with open(TEST_EMAILS_FILE, 'r') as f:
+                data = json.load(f)
+        return data
+    except Exception as e:
+        logger.error(f"Failed to load test emails: {e}")
+        return {"emails": []}
+
+class TestEmailRequest(BaseModel):
+    email: str
+
+@app.post("/test-emails")
+async def save_test_email(request: TestEmailRequest):
+    """Save a new test email if it doesn't exist"""
+    try:
+        email = request.email
+        if not email:
+            raise HTTPException(status_code=400, detail="Email is required")
+            
+        emails = []
+        if os.path.exists(TEST_EMAILS_FILE):
+            with open(TEST_EMAILS_FILE, 'r') as f:
+                try:
+                    data = json.load(f)
+                    emails = data.get('emails', [])
+                except json.JSONDecodeError:
+                    emails = []
+        
+        if email not in emails:
+            emails.append(email)
+            # Keep only last 20 emails
+            if len(emails) > 20:
+                emails = emails[-20:]
+                
+            with open(TEST_EMAILS_FILE, 'w') as f:
+                json.dump({"emails": emails}, f)
+                
+        return {"success": True, "emails": emails}
+    except Exception as e:
+        logger.error(f"Failed to save test email: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/test-emails/{email}")
+async def delete_test_email(email: str):
+    """Delete a test email"""
+    try:
+        if os.path.exists(TEST_EMAILS_FILE):
+            with open(TEST_EMAILS_FILE, 'r') as f:
+                try:
+                    data = json.load(f)
+                    emails = data.get('emails', [])
+                except json.JSONDecodeError:
+                    return {"success": True}
+            
+            if email in emails:
+                emails.remove(email)
+                with open(TEST_EMAILS_FILE, 'w') as f:
+                    json.dump({"emails": emails}, f)
+                    
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"Failed to delete test email: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
 
 if __name__ == "__main__":
     import uvicorn

@@ -336,7 +336,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const projectToNextToken = useRef<{ [projectId: string]: string | null }>({});
   const loadUsers = async (projectId: string) => {
     try {
-      const response = await apiCall(`/projects/${projectId}/users?limit=500`);
+      const response = await apiCall(`/projects/${projectId}/users`);
       setUsers(prev => ({ ...prev, [projectId]: response.users }));
       projectToNextToken.current[projectId] = response.nextPageToken || null;
     } catch (error) {
