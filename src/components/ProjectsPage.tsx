@@ -484,6 +484,7 @@ export const ProjectsPage = () => {
 
   const [showBulkImportModal, setShowBulkImportModal] = useState(false);
   const [bulkImportLoading, setBulkImportLoading] = useState(false);
+  const [bulkImportResults, setBulkImportResults] = useState<any>(null);
   const [bulkCredentialsFile, setBulkCredentialsFile] = useState<File | null>(null);
   const [bulkServiceAccountFiles, setBulkServiceAccountFiles] = useState<FileList | null>(null);
 
@@ -588,18 +589,22 @@ export const ProjectsPage = () => {
       }
 
       const result = await res.json();
-
-      toast({
-        title: "Automated Import Complete",
-        description: `Successful: ${result.successful}, Failed: ${result.failed}`,
-        variant: result.failed > 0 ? "destructive" : "default"
-      });
+      setBulkImportResults(result);
 
       if (result.failed > 0) {
-        console.error("Automated import failures:", result.details);
+        toast({
+          title: "Import Complete with Errors",
+          description: `Successful: ${result.successful}, Failed: ${result.failed}. Check details below.`,
+          variant: "destructive"
+        });
+      } else {
+        toast({
+          title: "Automated Import Successful",
+          description: `Successfully imported ${result.successful} projects.`,
+        });
+        setShowBulkImportModal(false);
       }
 
-      setShowBulkImportModal(false);
       await reloadProjectsAndProfiles();
 
     } catch (error) {
@@ -1161,6 +1166,25 @@ export const ProjectsPage = () => {
                   Select all relevant JSON files. Filenames must match the entries in your text file.
                 </p>
               </div>
+
+              {bulkImportResults && (
+                <div className="mt-4 p-3 bg-gray-900 rounded border border-gray-700 max-h-40 overflow-y-auto">
+                  <h4 className="text-sm font-semibold text-gray-300 mb-2 flex justify-between">
+                    <span>Import Results</span>
+                    <span className="text-xs">
+                      {bulkImportResults.successful} OK, {bulkImportResults.failed} Failed
+                    </span>
+                  </h4>
+                  <div className="space-y-1">
+                    {bulkImportResults.details?.map((detail: any, idx: number) => (
+                      <div key={idx} className={`text-xs p-1 rounded ${detail.status === 'Success' ? 'text-emerald-400 bg-emerald-400/10' : 'text-red-400 bg-red-400/10'}`}>
+                        Line {detail.line}: {detail.project_id || 'Unknown'} - {detail.status || 'Failed'}
+                        {detail.error && <span className="block opacity-80 mt-1">{detail.error}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mt-4 pt-4 border-t border-gray-700">
                 <div className="text-xs text-gray-400 max-w-[200px]">

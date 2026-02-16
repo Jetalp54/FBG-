@@ -1878,11 +1878,24 @@ async def bulk_import_projects_automated(request: Request):
     """
     logger.info("Starting automated bulk import from credentials/ directory")
     
+    # Debug info
+    cwd = os.getcwd()
     credentials_dir = "credentials"
+    abs_credentials_dir = os.path.abspath(credentials_dir)
     credentials_file_path = os.path.join(credentials_dir, "credentials.txt")
     
+    logger.info(f"CWD: {cwd}")
+    logger.info(f"Credentials Dir: {abs_credentials_dir}")
+    
+    if not os.path.exists(abs_credentials_dir):
+        logger.error(f"Directory not found: {abs_credentials_dir}")
+        raise HTTPException(status_code=404, detail=f"Directory not found: {abs_credentials_dir}")
+        
     if not os.path.exists(credentials_file_path):
-        raise HTTPException(status_code=404, detail=f"Credentials file not found: {credentials_file_path}")
+        logger.error(f"File not found: {credentials_file_path}")
+        try: logger.info(f"Directory contents: {os.listdir(abs_credentials_dir)}")
+        except: pass
+        raise HTTPException(status_code=404, detail=f"File not found: {credentials_file_path}")
     
     results = {
         "successful": 0,
@@ -1974,8 +1987,9 @@ async def bulk_import_projects_automated(request: Request):
                 results["details"].append({
                     "line": line_num,
                     "project_id": project_id,
-                    "error": f"Service account not found in {credentials_dir}. Checked project_id='{project_id}', filename='{json_filename}', and prefix match.",
+                    "error": f"JSON file '{json_filename}' not found for project '{project_id}'",
                 })
+                logger.warning(f"Failed match for {project_id} at line {line_num}")
                 continue
             
             # Create project dictionary
