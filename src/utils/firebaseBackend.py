@@ -1870,6 +1870,165 @@ async def bulk_import_projects_v2(
         logger.error(f"Bulk import v2 failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/projects/bulk-import-automated")
+async def bulk_import_projects_automated(request: Request):
+    """
+    Automatically import projects from the 'credentials/' directory.
+    Uses 'credentials/credentials.txt' for metadata and matching JSON files in the same directory.
+    """
+    logger.info("Starting automated bulk import from credentials/ directory")
+    
+    credentials_dir = "credentials"
+    credentials_file_path = os.path.join(credentials_dir, "credentials.txt")
+    
+    if not os.path.exists(credentials_file_path):
+        raise HTTPException(status_code=404, detail=f"Credentials file not found: {credentials_file_path}")
+    
+    results = {
+        "successful": 0,
+        "failed": 0,
+        "details": []
+    }
+    
+    try:
+        # Get profile_id from request if provided, otherwise use default or first available
+        data = await request.json()
+        profile_id = data.get('profileId')
+        
+        # If no profileId, try to find the first one
+        if not profile_id:
+            profiles_data = load_profiles_from_file()
+            if profiles_data:
+                profile_id = profiles_data[0].get('id')
+            else:
+                profile_id = "default"
+
+        # Read all JSON files in the credentials directory
+        sa_files_content = {}
+        sa_by_project_id = {}
+        
+        for filename in os.listdir(credentials_dir):
+            if filename.endswith(".json"):
+                file_path = os.path.join(credentials_dir, filename)
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        sa_data = json.load(f)
+                        sa_files_content[filename] = sa_data
+                        if 'project_id' in sa_data:
+                            sa_by_project_id[sa_data['project_id']] = sa_data
+                except Exception as e:
+                    logger.warning(f"Failed to parse JSON file {filename}: {e}")
+        
+        # Read credentials file
+        with open(credentials_file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        for line_num, line in enumerate(lines, 1):
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+                
+            parts = line.split()
+            if len(parts) < 4:
+                results["failed"] += 1
+                results["details"].append({
+                    "line": line_num,
+                    "error": "Invalid format. Expected: email project_id api_key json_filename",
+                    "content": line
+                })
+                continue
+                
+            email, project_id, api_key, json_filename = parts[0], parts[1], parts[2], parts[3]
+            
+            # --- Matching Logic ---
+            service_account_data = None
+            match_method = "none"
+
+            # 1. Try matching by Project ID
+            if project_id in sa_by_project_id:
+                service_account_data = sa_by_project_id[project_id]
+                match_method = "project_id"
+
+            # 2. Try Exact Filename Match
+            if not service_account_data:
+                service_account_data = sa_files_content.get(json_filename)
+                if service_account_data: match_method = "filename"
+                
+            # 3. Try Cleaned Filename Match
+            if not service_account_data:
+                clean_json_filename = os.path.basename(json_filename)
+                service_account_data = sa_files_content.get(clean_json_filename)
+                if service_account_data: match_method = "clean_filename"
+
+            # 4. Try Prefix/Fuzzy Match
+            if not service_account_data:
+                target_stem = os.path.splitext(os.path.basename(json_filename))[0]
+                for fname, sa_data in sa_files_content.items():
+                    if fname.startswith(target_stem):
+                        service_account_data = sa_data
+                        match_method = "prefix_match"
+                        break
+            
+            if not service_account_data:
+                results["failed"] += 1
+                results["details"].append({
+                    "line": line_num,
+                    "project_id": project_id,
+                    "error": f"Service account not found in {credentials_dir}. Checked project_id='{project_id}', filename='{json_filename}', and prefix match.",
+                })
+                continue
+            
+            # Create project dictionary
+            new_project = {
+                "id": project_id,
+                "name": project_id,
+                "adminEmail": email,
+                "apiKey": api_key,
+                "serviceAccount": service_account_data,
+                "profileId": profile_id,
+                "status": "active",
+                "dataCollection": True,
+                "createdAt": datetime.now().isoformat()
+            }
+            
+            # Add to global projects
+            if project_id in projects:
+                projects[project_id].update(new_project)
+                action = "Updated"
+            else:
+                projects[project_id] = new_project
+                action = "Created"
+                
+            # Initialize Firebase App
+            try:
+                if project_id in firebase_apps:
+                    firebase_admin.delete_app(firebase_apps[project_id])
+                    del firebase_apps[project_id]
+                
+                cred = credentials.Certificate(service_account_data)
+                firebase_apps[project_id] = firebase_admin.initialize_app(cred, name=project_id)
+            except Exception as e:
+                logger.error(f"Failed to initialize app for {project_id}: {e}")
+                new_project["status"] = "error"
+                
+            results["successful"] += 1
+            results["details"].append({
+                "line": line_num,
+                "project_id": project_id,
+                "status": "Success",
+                "action": action,
+                "match_method": match_method
+            })
+            
+        # Save all projects
+        save_projects_to_file()
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Automated bulk import failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete("/projects/users/bulk")
 async def bulk_delete_users(bulk_delete: dict):
     logger.info("/projects/users/bulk endpoint called")

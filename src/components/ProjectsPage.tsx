@@ -560,6 +560,60 @@ export const ProjectsPage = () => {
     }
   };
 
+  const handleAutomatedBulkImport = async () => {
+    if (!selectedProfile) {
+      toast({
+        title: "Missing Profile",
+        description: "Please select a profile to assign projects to.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setBulkImportLoading(true);
+    try {
+      const currentUsername = localStorage.getItem('app-username') || 'admin';
+      const res = await fetch(`${API_BASE_URL}/projects/bulk-import-automated`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-App-Username': currentUsername,
+        },
+        body: JSON.stringify({ profileId: selectedProfile })
+      });
+
+      if (!res.ok) {
+        const result = await res.json();
+        throw new Error(result.detail || result.error || 'Failed to process automated bulk import');
+      }
+
+      const result = await res.json();
+
+      toast({
+        title: "Automated Import Complete",
+        description: `Successful: ${result.successful}, Failed: ${result.failed}`,
+        variant: result.failed > 0 ? "destructive" : "default"
+      });
+
+      if (result.failed > 0) {
+        console.error("Automated import failures:", result.details);
+      }
+
+      setShowBulkImportModal(false);
+      await reloadProjectsAndProfiles();
+
+    } catch (error) {
+      console.error('Automated import error:', error);
+      toast({
+        title: "Import Failed",
+        description: error instanceof Error ? error.message : "Failed to process automated bulk import",
+        variant: "destructive"
+      });
+    } finally {
+      setBulkImportLoading(false);
+    }
+  };
+
 
   return (
     <div className="p-8 space-y-8">
@@ -1110,6 +1164,17 @@ export const ProjectsPage = () => {
                 >
                   Cancel
                 </Button>
+
+                <Button
+                  type="button"
+                  onClick={handleAutomatedBulkImport}
+                  className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700"
+                  disabled={bulkImportLoading}
+                >
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  {bulkImportLoading ? 'Processing...' : 'Auto-Load from Directory'}
+                </Button>
+
                 <Button
                   type="submit"
                   className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
