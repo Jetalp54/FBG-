@@ -31,7 +31,7 @@ export const ProjectsPage = () => {
   const [editingProject, setEditingProject] = useState<any>(null);
   const [editForm, setEditForm] = useState({ name: '', adminEmail: '', apiKey: '', serviceAccount: null });
   const [isEditing, setIsEditing] = useState(false);
-  const [analytics, setAnalytics] = useState<{[projectId: string]: {total_sent: number, sent_today: number, campaigns: number}} | null>(null);
+  const [analytics, setAnalytics] = useState<{ [projectId: string]: { total_sent: number, sent_today: number, campaigns: number } } | null>(null);
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const [showGoogleCloudDeleteModal, setShowGoogleCloudDeleteModal] = useState(false);
   const [googleCloudDeleteLoading, setGoogleCloudDeleteLoading] = useState(false);
@@ -58,7 +58,7 @@ export const ProjectsPage = () => {
     if (debouncedSearch.trim()) params.set('search', debouncedSearch.trim());
     // Use the apiCall function from context to ensure proper headers
     const currentUsername = localStorage.getItem('app-username') || 'admin';
-    fetch(`${API_BASE_URL}/projects?${params.toString()}`, { 
+    fetch(`${API_BASE_URL}/projects?${params.toString()}`, {
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
@@ -80,10 +80,10 @@ export const ProjectsPage = () => {
         const term = debouncedSearch.trim().toLowerCase();
         const filtered = term
           ? projects.filter(p =>
-              p.name?.toLowerCase().includes(term) ||
-              p.adminEmail?.toLowerCase().includes(term) ||
-              p.id?.toLowerCase().includes(term)
-            )
+            p.name?.toLowerCase().includes(term) ||
+            p.adminEmail?.toLowerCase().includes(term) ||
+            p.id?.toLowerCase().includes(term)
+          )
           : projects;
         setVisibleProjects(filtered.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize));
         setServerTotal(filtered.length);
@@ -198,14 +198,14 @@ export const ProjectsPage = () => {
 
   const handleReconnectProject = async (projectId: string) => {
     try {
-          const currentUsername = localStorage.getItem('app-username') || 'admin';
-    const response = await fetch(`${API_BASE_URL}/projects/${projectId}/reconnect`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-App-Username': currentUsername,
-      }
-    });
+      const currentUsername = localStorage.getItem('app-username') || 'admin';
+      const response = await fetch(`${API_BASE_URL}/projects/${projectId}/reconnect`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-App-Username': currentUsername,
+        }
+      });
       const result = await response.json();
       if (result.success) {
         toast({
@@ -270,7 +270,7 @@ export const ProjectsPage = () => {
       const currentUsername = localStorage.getItem('app-username') || 'admin';
       const response = await fetch(`${API_BASE_URL}/projects/${editingProject.id}`, {
         method: 'PUT',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           'X-App-Username': currentUsername,
         },
@@ -339,9 +339,9 @@ export const ProjectsPage = () => {
           'X-App-Username': currentUsername,
         }
       });
-      
+
       const result = await response.json();
-      
+
       if (response.ok && result.success) {
         toast({
           title: "Project Deleted from Google Cloud",
@@ -395,9 +395,9 @@ export const ProjectsPage = () => {
           projectIds: selectedProjects,
         }),
       });
-      
+
       const result = await response.json();
-      
+
       if (response.ok && result.success) {
         toast({
           title: "Projects Deleted from Google Cloud",
@@ -482,6 +482,85 @@ export const ProjectsPage = () => {
     }
   };
 
+  const [showBulkImportModal, setShowBulkImportModal] = useState(false);
+  const [bulkImportLoading, setBulkImportLoading] = useState(false);
+  const [bulkCredentialsFile, setBulkCredentialsFile] = useState<File | null>(null);
+  const [bulkServiceAccountFiles, setBulkServiceAccountFiles] = useState<FileList | null>(null);
+
+  const handleBulkImportV2 = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bulkCredentialsFile || !bulkServiceAccountFiles || bulkServiceAccountFiles.length === 0) {
+      toast({
+        title: "Missing Files",
+        description: "Please upload both credentials file and service account JSONs.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!selectedProfile) {
+      toast({
+        title: "Missing Profile",
+        description: "Please select a profile to assign projects to.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setBulkImportLoading(true);
+    const formData = new FormData();
+    formData.append('profile_id', selectedProfile);
+    formData.append('credentials_file', bulkCredentialsFile);
+
+    for (let i = 0; i < bulkServiceAccountFiles.length; i++) {
+      formData.append('service_accounts', bulkServiceAccountFiles[i]);
+    }
+
+    try {
+      const currentUsername = localStorage.getItem('app-username') || 'admin';
+      const res = await fetch(`${API_BASE_URL}/projects/bulk-import-v2`, {
+        method: 'POST',
+        headers: {
+          'X-App-Username': currentUsername,
+        },
+        body: formData
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`Server error: ${errorText}`);
+      }
+
+      const result = await res.json();
+
+      toast({
+        title: "Bulk Import Complete",
+        description: `Successful: ${result.successful}, Failed: ${result.failed}`,
+        variant: result.failed > 0 ? "destructive" : "default"
+      });
+
+      if (result.failed > 0) {
+        console.error("Bulk import failures:", result.details);
+      }
+
+      setShowBulkImportModal(false);
+      setBulkCredentialsFile(null);
+      setBulkServiceAccountFiles(null);
+      await reloadProjectsAndProfiles();
+
+    } catch (error) {
+      console.error('Bulk import error:', error);
+      toast({
+        title: "Import Failed",
+        description: error instanceof Error ? error.message : "Failed to process bulk import",
+        variant: "destructive"
+      });
+    } finally {
+      setBulkImportLoading(false);
+    }
+  };
+
+
   return (
     <div className="p-8 space-y-8">
       <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
@@ -546,6 +625,13 @@ export const ProjectsPage = () => {
             Add Project
           </Button>
           <Button
+            onClick={() => setShowBulkImportModal(true)}
+            className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
+          >
+            <Upload className="w-4 h-4 mr-2" />
+            Bulk Import
+          </Button>
+          <Button
             onClick={() => setShowAdminServiceAccountModal(true)}
             variant="outline"
             className="border-orange-500 text-orange-400 hover:bg-orange-900/20"
@@ -558,7 +644,7 @@ export const ProjectsPage = () => {
             onClick={async () => {
               try {
                 const currentUsername = localStorage.getItem('app-username') || 'admin';
-                await Promise.all(visibleProjects.map(p => fetch(`${API_BASE_URL}/projects/${p.id}/reconnect`, { 
+                await Promise.all(visibleProjects.map(p => fetch(`${API_BASE_URL}/projects/${p.id}/reconnect`, {
                   method: 'POST',
                   headers: {
                     'Content-Type': 'application/json',
@@ -644,7 +730,7 @@ export const ProjectsPage = () => {
                     />
                   </div>
                 </div>
-                
+
                 <div>
                   <Label htmlFor="apiKey" className="text-gray-300">Firebase Web API Key</Label>
                   <Input
@@ -659,7 +745,7 @@ export const ProjectsPage = () => {
                     Find this in Firebase Console → Project Settings → General → Web API Key
                   </p>
                 </div>
-                
+
                 <div>
                   <Label htmlFor="serviceAccount" className="text-gray-300">Service Account JSON</Label>
                   <div className="mt-2">
@@ -788,12 +874,11 @@ export const ProjectsPage = () => {
                 </div>
                 <div>
                   <p className="text-gray-400 text-sm">Status</p>
-                  <p className={`text-sm font-medium ${
-                    project.status === 'active' ? 'text-green-400' :
+                  <p className={`text-sm font-medium ${project.status === 'active' ? 'text-green-400' :
                     project.status === 'error' ? 'text-red-400' : 'text-yellow-400'
-                  }`}>
+                    }`}>
                     {project.status === 'active' ? 'Connected' :
-                     project.status === 'error' ? 'Connection Failed' : 'Connecting...'}
+                      project.status === 'error' ? 'Connection Failed' : 'Connecting...'}
                   </p>
                 </div>
                 <div>
@@ -926,7 +1011,7 @@ export const ProjectsPage = () => {
                   ⚠️ This service account must have permission to delete projects in your Google Cloud organization.
                 </p>
               </div>
-              
+
               <div>
                 <Label className="text-gray-300">Admin Service Account JSON</Label>
                 <div className="mt-2">
@@ -941,17 +1026,17 @@ export const ProjectsPage = () => {
                   Download from Google Cloud Console → IAM & Admin → Service Accounts → Create/Select → Keys → Add Key → JSON
                 </p>
               </div>
-              
+
               <div className="flex gap-2">
-                <Button 
-                  onClick={handleAdminServiceAccountUpload} 
+                <Button
+                  onClick={handleAdminServiceAccountUpload}
                   disabled={adminServiceAccountLoading || !adminServiceAccountFile}
                   className="bg-orange-600 hover:bg-orange-700"
                 >
                   {adminServiceAccountLoading ? 'Uploading...' : 'Upload Admin Service Account'}
                 </Button>
-                <Button 
-                  variant="outline" 
+                <Button
+                  variant="outline"
                   onClick={() => setShowAdminServiceAccountModal(false)}
                   className="border-gray-600 text-gray-300 hover:bg-gray-700"
                 >
@@ -959,6 +1044,81 @@ export const ProjectsPage = () => {
                 </Button>
               </div>
             </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {showBulkImportModal && (
+        <Dialog open={showBulkImportModal} onOpenChange={setShowBulkImportModal}>
+          <DialogContent className="bg-gray-800 border-gray-700 text-white max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Bulk Import Projects</DialogTitle>
+              <div className="text-sm text-gray-400">
+                Upload a text file with credentials and the corresponding JSON service account files.
+                <br />
+                Text file format per line: email project_id api_key json_filename
+              </div>
+            </DialogHeader>
+            <form onSubmit={handleBulkImportV2} className="space-y-4">
+              <div>
+                <Label className="text-gray-300">Assign to Profile</Label>
+                <select
+                  value={selectedProfile}
+                  onChange={e => setSelectedProfile(e.target.value)}
+                  className="bg-gray-700 border-gray-600 text-white w-full p-2 rounded mt-1"
+                  disabled={bulkImportLoading}
+                >
+                  {profiles.map(profile => (
+                    <option key={profile.id} value={profile.id}>{profile.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <Label className="text-gray-300">Credentials File (.txt)</Label>
+                <Input
+                  type="file"
+                  accept=".txt"
+                  onChange={(e) => setBulkCredentialsFile(e.target.files?.[0] || null)}
+                  className="bg-gray-700 border-gray-600 text-white mt-1"
+                  disabled={bulkImportLoading}
+                />
+              </div>
+
+              <div>
+                <Label className="text-gray-300">Service Account JSONs (Multiple)</Label>
+                <Input
+                  type="file"
+                  accept=".json"
+                  multiple
+                  onChange={(e) => setBulkServiceAccountFiles(e.target.files)}
+                  className="bg-gray-700 border-gray-600 text-white mt-1"
+                  disabled={bulkImportLoading}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Select all relevant JSON files. Filenames must match the entries in your text file.
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-2 mt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setShowBulkImportModal(false)}
+                  className="border-gray-600 text-gray-300 hover:bg-gray-700"
+                  disabled={bulkImportLoading}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
+                  disabled={bulkImportLoading || !bulkCredentialsFile || !bulkServiceAccountFiles}
+                >
+                  {bulkImportLoading ? 'Importing...' : 'Start Import'}
+                </Button>
+              </div>
+            </form>
           </DialogContent>
         </Dialog>
       )}

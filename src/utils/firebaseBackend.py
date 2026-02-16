@@ -3,7 +3,7 @@ Enhanced FastAPI Backend Service for Firebase Operations with Multi-Project Para
 Run this with: python src/utils/firebaseBackend.py
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Body, WebSocket, WebSocketDisconnect, Depends, Path, Query
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Body, WebSocket, WebSocketDisconnect, Depends, Path, Query, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional, Set
@@ -1706,6 +1706,128 @@ async def import_users_parallel(user_import: UserImport):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to import users: {str(e)}")
+
+@app.post("/projects/bulk-import-v2")
+async def bulk_import_projects_v2(
+    profile_id: str = Form(...),
+    credentials_file: UploadFile = File(...),
+    service_accounts: List[UploadFile] = File(...),
+):
+    """
+    Bulk import projects using a credentials text file and multiple service account JSONs.
+    Text file format per line: email project_id api_key json_filename
+    Example: support@example.com my-project AIzaSy... my-project.json
+    """
+    logger.info(f"Starting bulk import v2: {credentials_file.filename}, {len(service_accounts)} json files")
+    
+    results = {
+        "successful": 0,
+        "failed": 0,
+        "details": []
+    }
+    
+    try:
+        # Read all service account files into a dictionary for quick lookup by filename
+        sa_files_content = {}
+        for sa_file in service_accounts:
+            content = await sa_file.read()
+            try:
+                # Store by filename (and potentially by project_id inside if needed later)
+                sa_files_content[sa_file.filename] = json.loads(content)
+            except Exception as e:
+                logger.warning(f"Failed to parse JSON file {sa_file.filename}: {e}")
+                
+        # Read credentials file
+        creds_content = await credentials_file.read()
+        creds_text = creds_content.decode('utf-8')
+        
+        lines = creds_text.strip().split('\n')
+        
+        for line_num, line in enumerate(lines, 1):
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+                
+            parts = line.split()
+            if len(parts) < 4:
+                results["failed"] += 1
+                results["details"].append({
+                    "line": line_num,
+                    "error": "Invalid format. Expected: email project_id api_key json_filename",
+                    "content": line
+                })
+                continue
+                
+            email, project_id, api_key, json_filename = parts[0], parts[1], parts[2], parts[3]
+            
+            # Find matching service account
+            service_account_data = sa_files_content.get(json_filename)
+            
+            if not service_account_data:
+                # Try explicit match if filename in text file doesn't match uploaded filename exactly
+                # For example if path is included in text file
+                clean_json_filename = os.path.basename(json_filename)
+                service_account_data = sa_files_content.get(clean_json_filename)
+                
+            if not service_account_data:
+                results["failed"] += 1
+                results["details"].append({
+                    "line": line_num,
+                    "project_id": project_id,
+                    "error": f"Service account file '{json_filename}' not found in upload",
+                })
+                continue
+            
+            # Create project dictionary
+            new_project = {
+                "id": project_id,
+                "name": project_id, # Default name to ID
+                "adminEmail": email,
+                "apiKey": api_key,
+                "serviceAccount": service_account_data,
+                "profileId": profile_id,
+                "status": "active", # Assume active initially
+                "dataCollection": True,
+                "createdAt": datetime.now().isoformat()
+            }
+            
+            # Add to global projects
+            if project_id in projects:
+                # Update existing
+                projects[project_id].update(new_project)
+                action = "Updated"
+            else:
+                projects[project_id] = new_project
+                action = "Created"
+                
+            # Initialize Firebase App
+            try:
+                if project_id in firebase_apps:
+                    firebase_admin.delete_app(firebase_apps[project_id])
+                    del firebase_apps[project_id]
+                
+                cred = credentials.Certificate(service_account_data)
+                firebase_apps[project_id] = firebase_admin.initialize_app(cred, name=project_id)
+            except Exception as e:
+                logger.error(f"Failed to initialize app for {project_id}: {e}")
+                new_project["status"] = "error"
+                
+            results["successful"] += 1
+            results["details"].append({
+                "line": line_num,
+                "project_id": project_id,
+                "status": "Success",
+                "action": action
+            })
+            
+        # Save all projects
+        save_projects_to_file()
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Bulk import v2 failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/projects/users/bulk")
 async def bulk_delete_users(bulk_delete: dict):
