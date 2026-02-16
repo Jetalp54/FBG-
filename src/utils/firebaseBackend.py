@@ -4728,23 +4728,31 @@ async def initiate_domain_verification(request: DomainVerificationRequest):
         if not domain or '.' not in domain:
             raise HTTPException(status_code=400, detail="Invalid domain format")
             
-        if not request.project_ids:
-            raise HTTPException(status_code=400, detail="At least one project must be selected")
+        # Initiate verification for all projects
+        verification_details = []
+        for project_id in request.project_ids:
+            if project_id not in projects:
+                logger.warning(f"Project {project_id} not found, skipping in verification")
+                continue
+                
+            # Create record in Cloudflare for this project
+            v_domain, v_token = cf_client.create_verification_record(domain, project_id)
+            verification_details.append({
+                "project_id": project_id,
+                "verification_domain": v_domain,
+                "verification_token": v_token
+            })
         
-        # Get project name from the first project ID
-        project_id = request.project_ids[0]
-        if project_id not in projects:
-            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-        
-        # Generate verification record using Project ID as requested
-        verification_domain, verification_token = cf_client.create_verification_record(domain, project_id)
-        
-        # Store verification status
+        if not verification_details:
+             raise HTTPException(status_code=400, detail="No valid projects found for verification.")
+
+        # Store verification status (using the details from the first project for UI compatibility)
         verification_id = hashlib.md5(f"{domain}:{datetime.now()}".encode()).hexdigest()[:16]
         domain_verifications[verification_id] = {
             "domain": domain,
-            "verification_domain": verification_domain,
-            "verification_token": verification_token,
+            "verification_domain": verification_details[0]["verification_domain"],
+            "verification_token": verification_details[0]["verification_token"],
+            "verification_details": verification_details,
             "project_ids": request.project_ids,
             "setup_email_dns": request.setup_email_dns,
             "email_provider": request.email_provider,
@@ -4753,16 +4761,16 @@ async def initiate_domain_verification(request: DomainVerificationRequest):
             "attempts": 0
         }
         
-        logger.info(f"Initiated verification for domain: {domain}")
+        logger.info(f"Initiated bulk verification for domain: {domain} across {len(verification_details)} projects")
         
         return {
             "success": True,
             "verification_id": verification_id,
             "domain": domain,
-            "verification_domain": verification_domain,
-            "verification_token": verification_token,
+            "verification_domain": verification_details[0]["verification_domain"],
+            "verification_token": verification_details[0]["verification_token"],
             "status": "pending",
-            "message": f"TXT record created. Verification will complete automatically in 1-5 minutes."
+            "message": f"Cloudflare records created for {len(verification_details)} projects. Verification will take 1-5 minutes."
         }
     except HTTPException:
         raise
@@ -4801,14 +4809,30 @@ async def get_verification_status(verification_id: str):
                 **verification
             }
         
-        # Verify TXT record
-        verified, message = cf_client.verify_txt_record(
-            verification["verification_domain"],
-            verification["verification_token"],
-            max_attempts=1  # Single check per status request
-        )
+        # Verify TXT records for ALL projects
+        all_verified = True
+        failed_messages = []
         
-        if verified:
+        details = verification.get("verification_details", [])
+        if not details:
+            # Fallback for old records
+            details = [{
+                "project_id": verification["project_ids"][0],
+                "verification_domain": verification["verification_domain"],
+                "verification_token": verification["verification_token"]
+            }]
+            
+        for detail in details:
+            v_domain = detail["verification_domain"]
+            v_token = detail["verification_token"]
+            p_id = detail["project_id"]
+            
+            is_v, msg = cf_client.verify_txt_record(v_domain, v_token, max_attempts=1)
+            if not is_v:
+                all_verified = False
+                failed_messages.append(f"{p_id}: {msg}")
+        
+        if all_verified:
             verification["status"] = "verified"
             verification["verified_at"] = datetime.now().isoformat()
             verification["message"] = "Domain verified successfully"
@@ -4838,10 +4862,10 @@ async def get_verification_status(verification_id: str):
             
             logger.info(f"Domain verified: {verification['domain']}")
         else:
-            verification["message"] = message
+            verification["message"] = "Waiting for records: " + "; ".join(failed_messages)
         
         return {
-            "success": verified,
+            "success": all_verified,
             "verification_id": verification_id,
             **verification
         }
