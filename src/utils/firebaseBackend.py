@@ -4799,10 +4799,10 @@ async def get_verification_status(verification_id: str):
         cf_client = get_cf_client()
         verification["attempts"] += 1
         
-        # Check if we've exceeded max attempts (30 attempts = 5 minutes with 10s polls)
-        if verification["attempts"] > 30:
+        # Check if we've exceeded max attempts (100 attempts = ~16 minutes with 10s polls)
+        if verification["attempts"] > 100:
             verification["status"] = "timeout"
-            verification["message"] = "Verification timeout. DNS propagation may take up to 24 hours."
+            verification["message"] = "Verification timeout. DNS propagation still pending. You can check manually later."
             return {
                 "success": False,
                 "verification_id": verification_id,

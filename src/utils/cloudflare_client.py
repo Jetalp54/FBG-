@@ -54,8 +54,18 @@ class CloudflareClient:
             return result
         
         except requests.exceptions.RequestException as e:
-            logger.error(f"Cloudflare API request failed: {str(e)}")
-            raise Exception(f"Failed to communicate with Cloudflare: {str(e)}")
+            error_msg = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_body = e.response.json()
+                    if 'errors' in error_body:
+                        cf_errors = ', '.join([err.get('message', '') for err in error_body['errors']])
+                        error_msg = f"{error_msg} - Cloudflare Details: {cf_errors}"
+                except:
+                    pass
+            
+            logger.error(f"Cloudflare API request failed: {error_msg}")
+            raise Exception(f"Failed to communicate with Cloudflare: {error_msg}")
     
     def get_zone_id(self, domain: str) -> Optional[str]:
         """Get zone ID for a domain"""

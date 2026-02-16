@@ -39,6 +39,9 @@ export const CloudflareDomainManager = () => {
     // Verified domains
     const [verifiedDomains, setVerifiedDomains] = useState<any[]>([]);
 
+    // Results state
+    const [bulkResults, setBulkResults] = useState<any>(null);
+
     // Filter projects by active profile
     const activeProjects = projects.filter(p =>
         (!activeProfile || p.profileId === activeProfile) && p.status === 'active'
@@ -126,6 +129,7 @@ export const CloudflareDomainManager = () => {
         }
 
         setIsSubmitting(true);
+        setBulkResults(null); // Clear previous results
 
         try {
             const response = await fetch(`${API_BASE_URL}/cloudflare/initiate-verification`, {
@@ -177,6 +181,7 @@ export const CloudflareDomainManager = () => {
 
             if (data.status === 'verified') {
                 setIsPolling(false);
+                setBulkResults(data); // Store final detailed results
 
                 toast({
                     title: 'Domain Verified! ✅',
@@ -186,16 +191,17 @@ export const CloudflareDomainManager = () => {
                 // Reload verified domains
                 await loadVerifiedDomains();
 
-                // Clear form
+                // Clear form but keep domain in status display
                 setDomain('');
                 setSelectedProjects([]);
-                setVerificationId(null);
+                // setVerificationId(null); // Keep ID to show status
             } else if (data.status === 'error' || data.status === 'timeout') {
                 setIsPolling(false);
+                setBulkResults(data);
 
                 toast({
-                    title: 'Verification Failed',
-                    description: data.message || 'Verification encountered an error',
+                    title: 'Verification Ended',
+                    description: data.message || 'Verification encountered an error or timed out',
                     variant: 'destructive',
                 });
             }
@@ -230,12 +236,66 @@ export const CloudflareDomainManager = () => {
     return (
         <div className="p-8 space-y-8">
             <div>
-                <h1 className="text-3xl font-bold text-white mb-2">Cloudflare Domain Verification</h1>
+                <h1 className="text-3xl font-bold text-white mb-2">Cloudflare Domain Manager</h1>
                 <p className="text-gray-400">
                     Profile: <span className="text-blue-400 font-medium">{activeProfileName}</span> •
-                    Automatically verify and configure custom domains via Cloudflare
+                    Manage domain verification and DNS records
                 </p>
             </div>
+
+            {/* Verification Results Log (Notification Feature) */}
+            {bulkResults && (
+                <Card className="bg-gray-800 border-blue-500/30 overflow-hidden animate-in fade-in duration-500">
+                    <CardHeader className="bg-blue-500/10 border-b border-blue-500/20 py-3">
+                        <CardTitle className="text-blue-400 text-sm flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <RefreshCw className={`w-4 h-4 ${isPolling ? 'animate-spin' : ''}`} />
+                                Bulk Process Results: {bulkResults.domain}
+                            </div>
+                            <Button variant="ghost" size="sm" onClick={() => setBulkResults(null)} className="h-6 w-6 p-0 text-gray-400 hover:text-white">
+                                ✕
+                            </Button>
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent className="p-0">
+                        <div className="max-h-60 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-700">
+                            <table className="w-full text-sm text-left">
+                                <thead className="bg-gray-900/50 text-gray-400 sticky top-0">
+                                    <tr>
+                                        <th className="px-4 py-2 font-medium">Project ID</th>
+                                        <th className="px-4 py-2 font-medium">Status</th>
+                                        <th className="px-4 py-2 font-medium">Message</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-700">
+                                    {bulkResults.project_ids?.map((pid: string) => {
+                                        const update = bulkResults.firebase_update?.[pid];
+                                        return (
+                                            <tr key={pid} className="hover:bg-gray-700/50 transition">
+                                                <td className="px-4 py-2 text-white font-mono text-xs">{pid}</td>
+                                                <td className="px-4 py-2">
+                                                    {bulkResults.status === 'verified' && (!update || update.success) ? (
+                                                        <span className="text-green-400 flex items-center gap-1">
+                                                            <CheckCircle className="w-3 h-3" /> Success
+                                                        </span>
+                                                    ) : (
+                                                        <span className="text-yellow-400 flex items-center gap-1">
+                                                            <Clock className="w-3 h-3" /> {bulkResults.status}
+                                                        </span>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-2 text-gray-400 text-xs">
+                                                    {update?.error || update?.message || bulkResults.message || 'Processing...'}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </CardContent>
+                </Card>
+            )}
 
             {/* Add New Domain */}
             <Card className="bg-gradient-to-r from-purple-900/50 to-blue-900/50 border-purple-500/50">
@@ -285,12 +345,13 @@ export const CloudflareDomainManager = () => {
                                 {activeProjects.map((project) => (
                                     <div key={project.id} className="flex items-center gap-2">
                                         <Checkbox
+                                            id={`p-${project.id}`}
                                             checked={selectedProjects.includes(project.id)}
                                             onCheckedChange={() => handleProjectToggle(project.id)}
                                             className="border-gray-500"
                                             disabled={isPolling}
                                         />
-                                        <Label className="text-white text-sm cursor-pointer">
+                                        <Label htmlFor={`p-${project.id}`} className="text-white text-sm cursor-pointer truncate">
                                             {project.name}
                                         </Label>
                                     </div>
@@ -322,9 +383,9 @@ export const CloudflareDomainManager = () => {
                                     </SelectTrigger>
                                     <SelectContent className="bg-gray-700 border-gray-600">
                                         <SelectItem value="google" className="text-white hover:bg-gray-600">Google</SelectItem>
-                                        <SelectItem value="outlook" className="text-white hover:bg-gray-600">Outlook (Microsoft 365)</SelectItem>
+                                        <SelectItem value="outlook" className="text-white hover:bg-gray-600">Outlook</SelectItem>
                                         <SelectItem value="zoho" className="text-white hover:bg-gray-600">Zoho Mail</SelectItem>
-                                        <SelectItem value="custom" className="text-white hover:bg-gray-600">Custom / Other</SelectItem>
+                                        <SelectItem value="custom" className="text-white hover:bg-gray-600">Custom</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>
@@ -336,51 +397,59 @@ export const CloudflareDomainManager = () => {
                         disabled={isSubmitting || isPolling || !domain || selectedProjects.length === 0}
                         className="bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800"
                     >
-                        {isSubmitting ? (
+                        {isSubmitting || isPolling ? (
                             <>
                                 <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                                Starting Verification...
+                                {isPolling ? 'Verifying Records...' : 'Starting...'}
                             </>
                         ) : (
                             <>
                                 <CheckCircle className="w-4 h-4 mr-2" />
-                                Verify Domain
+                                Verify Domain Across {selectedProjects.length} Projects
                             </>
                         )}
                     </Button>
 
                     {/* Verification Status */}
                     {verificationStatus && (
-                        <div className="bg-gray-700 p-4 rounded-lg mt-4">
+                        <div className="bg-gray-700 p-4 rounded-lg mt-4 animate-in slide-in-from-top-2 duration-300">
                             <div className="flex items-center justify-between mb-2">
-                                <span className="text-white font-medium">Verification Status</span>
+                                <span className="text-white font-medium text-sm">Action Status</span>
                                 {verificationStatus.status === 'pending' && (
-                                    <Badge className="bg-yellow-500/20 text-yellow-400">
+                                    <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/50">
                                         <Clock className="w-3 h-3 mr-1" />
-                                        Pending
+                                        Pending Propogation
                                     </Badge>
                                 )}
                                 {verificationStatus.status === 'verified' && (
-                                    <Badge className="bg-green-500/20 text-green-400">
+                                    <Badge className="bg-green-500/20 text-green-400 border-green-500/50">
                                         <CheckCircle className="w-3 h-3 mr-1" />
-                                        Verified
+                                        Complete
                                     </Badge>
                                 )}
                                 {(verificationStatus.status === 'error' || verificationStatus.status === 'timeout') && (
-                                    <Badge className="bg-red-500/20 text-red-400">
+                                    <Badge className="bg-red-500/20 text-red-400 border-red-500/50">
                                         <XCircle className="w-3 h-3 mr-1" />
-                                        Failed
+                                        Ended
                                     </Badge>
                                 )}
                             </div>
-                            <div className="text-gray-300 text-sm space-y-1">
-                                <p><strong>Domain:</strong> {verificationStatus.domain}</p>
-                                <p><strong>Message:</strong> {verificationStatus.message}</p>
-                                {verificationStatus.verification_domain && (
-                                    <p><strong>Verification Record:</strong> {verificationStatus.verification_domain}</p>
-                                )}
+                            <div className="text-gray-300 text-xs space-y-1 bg-black/20 p-2 rounded">
+                                <p><strong>App Domain:</strong> {verificationStatus.domain}</p>
+                                <p><strong>Status Message:</strong> {verificationStatus.message}</p>
                                 {verificationStatus.attempts !== undefined && (
-                                    <p><strong>Attempts:</strong> {verificationStatus.attempts}/{verificationStatus.max_attempts}</p>
+                                    <div className="mt-2">
+                                        <div className="flex justify-between text-[10px] text-gray-400 mb-1">
+                                            <span>Propagation Check</span>
+                                            <span>{verificationStatus.attempts} / 100</span>
+                                        </div>
+                                        <div className="w-full bg-gray-600 h-1.5 rounded-full overflow-hidden">
+                                            <div
+                                                className="bg-purple-500 h-full transition-all duration-500"
+                                                style={{ width: `${(verificationStatus.attempts / 100) * 100}%` }}
+                                            />
+                                        </div>
+                                    </div>
                                 )}
                             </div>
                         </div>
@@ -393,42 +462,57 @@ export const CloudflareDomainManager = () => {
                 <CardHeader>
                     <CardTitle className="text-white flex items-center gap-2">
                         <CheckCircle className="w-5 h-5 text-green-500" />
-                        Verified Domains ({verifiedDomains.length})
+                        Active Managed Domains ({verifiedDomains.length})
                     </CardTitle>
                 </CardHeader>
                 <CardContent>
                     {verifiedDomains.length === 0 ? (
-                        <p className="text-gray-400 text-center py-8">No verified domains yet. Add one above!</p>
+                        <div className="text-center py-12 border-2 border-dashed border-gray-700 rounded-xl">
+                            < Globe className="w-12 h-12 text-gray-600 mx-auto mb-3" />
+                            <p className="text-gray-400">No active managed domains found.</p>
+                        </div>
                     ) : (
-                        <div className="space-y-2">
+                        <div className="space-y-3">
                             {verifiedDomains.map((domain) => (
                                 <div
                                     key={domain.verification_id}
-                                    className="flex items-center justify-between p-4 bg-gray-700 rounded-lg hover:bg-gray-650 transition"
+                                    className="flex items-center justify-between p-4 bg-gray-700/50 rounded-lg border border-gray-700 hover:border-gray-600 transition group"
                                 >
                                     <div className="flex-1">
                                         <div className="flex items-center gap-2">
                                             <Globe className="w-4 h-4 text-blue-400" />
                                             <span className="text-white font-medium">{domain.domain}</span>
-                                            {domain.email_dns_configured && (
-                                                <Badge className="bg-blue-500/20 text-blue-400 text-xs">
-                                                    <Mail className="w-3 h-3 mr-1" />
-                                                    Email DNS
-                                                </Badge>
-                                            )}
+                                            <Badge className="bg-blue-500/10 text-blue-400 text-[10px] border-blue-500/20">
+                                                {domain.project_ids.length} Projects
+                                            </Badge>
                                         </div>
-                                        <div className="text-sm text-gray-400 mt-1">
-                                            {domain.project_ids.length} project(s) • Verified: {new Date(domain.verified_at).toLocaleString()}
+                                        <div className="text-[10px] text-gray-500 mt-1 flex gap-2">
+                                            <span>ID: {domain.verification_id}</span>
+                                            <span>•</span>
+                                            <span>Added: {new Date(domain.verified_at).toLocaleDateString()}</span>
                                         </div>
                                     </div>
-                                    <Button
-                                        size="sm"
-                                        variant="ghost"
-                                        onClick={() => deleteDomain(domain.verification_id)}
-                                        className="text-red-400 hover:text-red-300 hover:bg-red-500/20"
-                                    >
-                                        <Trash2 className="w-4 h-4" />
-                                    </Button>
+                                    <div className="flex items-center gap-2">
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => {
+                                                setVerificationId(domain.verification_id);
+                                                checkVerificationStatus(domain.verification_id);
+                                            }}
+                                            className="text-gray-400 hover:text-white"
+                                        >
+                                            <RefreshCw className="w-4 h-4" />
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => deleteDomain(domain.verification_id)}
+                                            className="text-gray-500 hover:text-red-400 hover:bg-red-500/10"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </Button>
+                                    </div>
                                 </div>
                             ))}
                         </div>
