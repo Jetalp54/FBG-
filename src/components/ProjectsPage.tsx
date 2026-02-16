@@ -1162,25 +1162,40 @@ export const ProjectsPage = () => {
                 </p>
               </div>
 
-              <div className="flex justify-end gap-2 mt-4">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setShowBulkImportModal(false)}
-                  className="border-gray-600 text-gray-300 hover:bg-gray-700"
-                  disabled={bulkImportLoading}
-                >
-                  Cancel
-                </Button>
+              <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mt-4 pt-4 border-t border-gray-700">
+                <div className="text-xs text-gray-400 max-w-[200px]">
+                  <p>Skip uploads? Ensure files are in the <code className="text-purple-400">credentials/</code> folder on the server.</p>
+                </div>
 
+                <div className="flex gap-2 w-full sm:w-auto">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setShowBulkImportModal(false)}
+                    className="flex-1 sm:flex-none border-gray-600 text-gray-300 hover:bg-gray-700"
+                    disabled={bulkImportLoading}
+                  >
+                    Cancel
+                  </Button>
 
-                <Button
-                  type="submit"
-                  className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
-                  disabled={bulkImportLoading || !bulkCredentialsFile || !bulkServiceAccountFiles}
-                >
-                  {bulkImportLoading ? 'Importing...' : 'Start Import'}
-                </Button>
+                  <Button
+                    type="button"
+                    onClick={handleAutomatedBulkImport}
+                    className="flex-1 sm:flex-none bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700"
+                    disabled={bulkImportLoading}
+                  >
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    {bulkImportLoading ? 'Auto-Loading...' : 'Auto-Load Credentials'}
+                  </Button>
+
+                  <Button
+                    type="submit"
+                    className="flex-1 sm:flex-none bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
+                    disabled={bulkImportLoading || !bulkCredentialsFile || !bulkServiceAccountFiles}
+                  >
+                    {bulkImportLoading ? 'Importing...' : 'Start Manual Import'}
+                  </Button>
+                </div>
               </div>
             </form>
           </DialogContent>
