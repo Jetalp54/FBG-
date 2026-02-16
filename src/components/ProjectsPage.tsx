@@ -686,6 +686,14 @@ export const ProjectsPage = () => {
             Bulk Import
           </Button>
           <Button
+            onClick={handleAutomatedBulkImport}
+            className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700"
+            disabled={bulkImportLoading}
+          >
+            <RefreshCw className="w-4 h-4 mr-2" />
+            {bulkImportLoading ? 'Auto-Loading...' : 'Auto-Load Credentials'}
+          </Button>
+          <Button
             onClick={() => setShowAdminServiceAccountModal(true)}
             variant="outline"
             className="border-orange-500 text-orange-400 hover:bg-orange-900/20"
@@ -1165,15 +1173,6 @@ export const ProjectsPage = () => {
                   Cancel
                 </Button>
 
-                <Button
-                  type="button"
-                  onClick={handleAutomatedBulkImport}
-                  className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700"
-                  disabled={bulkImportLoading}
-                >
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                  {bulkImportLoading ? 'Processing...' : 'Auto-Load from Directory'}
-                </Button>
 
                 <Button
                   type="submit"
