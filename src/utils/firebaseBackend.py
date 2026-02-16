@@ -1879,23 +1879,34 @@ async def bulk_import_projects_automated(request: Request):
     logger.info("Starting automated bulk import from credentials/ directory")
     
     # Debug info
-    cwd = os.getcwd()
-    credentials_dir = "credentials"
-    abs_credentials_dir = os.path.abspath(credentials_dir)
-    credentials_file_path = os.path.join(credentials_dir, "credentials.txt")
+    # Define potential credentials directories
+    potential_dirs = [
+        "credentials",                                      # Relative to CWD
+        "/opt/FBG-/credentials",                           # Source directory (User's upload location)
+        "/var/www/firebase-manager/credentials",           # Deployment directory
+        os.path.join(os.getcwd(), "credentials")           # Absolute CWD
+    ]
     
-    logger.info(f"CWD: {cwd}")
-    logger.info(f"Credentials Dir: {abs_credentials_dir}")
+    abs_credentials_dir = None
+    credentials_file_path = None
     
-    if not os.path.exists(abs_credentials_dir):
-        logger.error(f"Directory not found: {abs_credentials_dir}")
-        raise HTTPException(status_code=404, detail=f"Directory not found: {abs_credentials_dir}")
+    # Find the valid directory
+    for potential_dir in potential_dirs:
+        full_path = os.path.abspath(potential_dir)
+        check_file = os.path.join(full_path, "credentials.txt")
         
-    if not os.path.exists(credentials_file_path):
-        logger.error(f"File not found: {credentials_file_path}")
-        try: logger.info(f"Directory contents: {os.listdir(abs_credentials_dir)}")
-        except: pass
-        raise HTTPException(status_code=404, detail=f"File not found: {credentials_file_path}")
+        logger.info(f"Checking for credentials in: {full_path}")
+        
+        if os.path.exists(full_path) and os.path.exists(check_file):
+            abs_credentials_dir = full_path
+            credentials_file_path = check_file
+            logger.info(f"✅ Found valid credentials directory: {abs_credentials_dir}")
+            break
+            
+    if not abs_credentials_dir:
+        logger.error("Could not find 'credentials/credentials.txt' in any standard location.")
+        logger.info(f"Checked: {potential_dirs}")
+        raise HTTPException(status_code=404, detail="Credentials directory or credentials.txt not found in /opt/FBG-/credentials or local directory.")
     
     results = {
         "successful": 0,
@@ -1920,9 +1931,9 @@ async def bulk_import_projects_automated(request: Request):
         sa_files_content = {}
         sa_by_project_id = {}
         
-        for filename in os.listdir(credentials_dir):
+        for filename in os.listdir(abs_credentials_dir):
             if filename.endswith(".json"):
-                file_path = os.path.join(credentials_dir, filename)
+                file_path = os.path.join(abs_credentials_dir, filename)
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         sa_data = json.load(f)
