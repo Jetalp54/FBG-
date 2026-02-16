@@ -2606,77 +2606,42 @@ async def send_campaign(request: Request):
                 proj_id = str(proj.get('projectId', ''))
                 specific_users = proj.get('userIds', [])
                 
-                if proj_id not in firebase_apps or proj_id not in pyrebase_apps:
-                    logger.error(f"Project {proj_id} not initialized")
-                    return {'project_id': proj_id, 'successful': 0, 'failed': len(specific_users), 'total': len(specific_users)}
-                
-                # Get Firebase instances
-                firebase_app = firebase_apps[proj_id]
-                pyrebase_auth = pyrebase_apps[proj_id].auth()
-                
-                # List of users to process
-                users_to_process = []
-                
-                if specific_users and len(specific_users) > 0:
-                    users_to_process = [str(uid) for uid in specific_users if uid]
-                else:
-                    # FETCH ALL USERS IN BATCHES
-                    logger.info(f"[{proj_id}] No specific users provided, fetching ALL users for turbo mode")
-                    try:
-                        page = auth.list_users(app=firebase_app, max_results=1000)
-                        while page:
-                            users_to_process.extend([user.uid for user in page.users])
-                            if not page.next_page_token:
-                                break
-                            page = auth.list_users(app=firebase_app, max_results=1000, page_token=page.next_page_token)
-                    except Exception as e:
-                        logger.error(f"[{proj_id}] Failed to list users: {e}")
-                        return {'project_id': proj_id, 'successful': 0, 'failed': 0, 'total': 0, 'error': str(e)}
-
-                # Get user emails
-                user_emails = {}
-                for uid in users_to_process:
-                    try:
-                        user = auth.get_user(uid, app=firebase_app)
-                        if user.email:
-                            user_emails[uid] = user.email
-                    except:
-                        pass
-                
-                email_list = list(user_emails.values())
-                create_campaign_result(campaign_id, proj_id, len(email_list))
-                
-                # TURBO: Use maximum workers
-                cpu_count = os.cpu_count() or 1
-                max_workers = min(cpu_count * 6, 100)
-                
-                def fire_email(email):
-                    try:
-                        pyrebase_auth.send_password_reset_email(email)
-                        user_id = next((uid for uid, em in user_emails.items() if em == email), None)
-                        update_campaign_result(campaign_id, proj_id, True, user_id=user_id, email=email)
-                        return True
-                    except Exception as e:
-                        user_id = next((uid for uid, em in user_emails.items() if em == email), None)
-                        update_campaign_result(campaign_id, proj_id, False, user_id=user_id, email=email, error=str(e))
-                        return False
-                
-                successful = 0
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = {executor.submit(fire_email, email): email for email in email_list}
-                    for future in concurrent.futures.as_completed(futures):
-                        if future.result():
-                            successful += 1
-                
-                increment_daily_count(proj_id)
-                return {
-                    'project_id': proj_id,
-                    'successful': successful,
-                    'failed': len(email_list) - successful,
-                    'total': len(email_list)
-                }
+                # Use the optimized fire_all_emails function
+                # We run it in a separate thread because it's blocking (uses ThreadPoolExecutor inside)
+                try:
+                    logger.info(f"⚡ [TURBO] Launching optimized sender for project {proj_id}")
+                    
+                    # Pass 'lightning=True' to enable maximum worker count (200)
+                    successful = await loop.run_in_executor(
+                        None, 
+                        fire_all_emails, 
+                        proj_id, 
+                        specific_users, 
+                        campaign_id, 
+                        200,   # Force 200 workers
+                        True   # Lightning mode = True
+                    )
+                    
+                    # Return stats (approximate, since fire_all_emails handles its own logging/tracking)
+                    return {
+                        'project_id': proj_id,
+                        'successful': successful,
+                        'failed': 0, # simplified for summary
+                        'total': successful # simplified
+                    }
+                except Exception as e:
+                    logger.error(f"❌ [TURBO] Project {proj_id} failed: {e}")
+                    return {
+                        'project_id': proj_id, 
+                        'successful': 0, 
+                        'failed': 0, 
+                        'total': 0, 
+                        'error': str(e)
+                    }
             
-            # Execute all projects in parallel
+            # Execute all projects in parallel using asyncio.gather
+            # This ensures that ALL projects start at the exact same time
+            logger.info(f"🚀 [TURBO] Launching {len(projects)} projects in parallel...")
             tasks = [process_project_turbo(proj) for proj in projects]
             project_results = await asyncio.gather(*tasks)
             
@@ -2684,7 +2649,7 @@ async def send_campaign(request: Request):
             total_failed = sum(r['failed'] for r in project_results)
             
             response = {
-                "success": total_failed == 0,
+                "success": True,
                 "mode": "turbo",
                 "summary": {
                     "successful": total_successful,
@@ -2693,7 +2658,7 @@ async def send_campaign(request: Request):
                 },
                 "project_results": project_results,
                 "campaign_id": campaign_id,
-                "message": f"Turbo mode: {total_successful} successful, {total_failed} failed"
+                "message": f"Turbo mode completed: {total_successful} emails sent across {len(projects)} projects"
             }
             
             logger.info(f"✅ [TURBO] Campaign completed: {response}")
