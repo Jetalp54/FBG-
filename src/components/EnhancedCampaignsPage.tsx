@@ -47,6 +47,7 @@ export const EnhancedCampaignsPage = () => {
     loadUsers,
     updateCampaign,
     loadCampaigns,
+    startCampaign,
   } = useEnhancedApp();
   const { toast } = useToast();
 
@@ -306,76 +307,16 @@ export const EnhancedCampaignsPage = () => {
     }, 2000);
   };
 
-  const handleSendCampaign = async (campaign: any, isLightning = false) => {
-    console.log('EnhancedCampaignsPage: handleSendCampaign called');
-    console.log('EnhancedCampaignsPage: campaign =', campaign);
-    console.log('EnhancedCampaignsPage: sending mode =', campaign.sending_mode);
-    console.log('EnhancedCampaignsPage: API_BASE_URL =', API_BASE_URL);
-
+  const handleSendCampaign = async (campaign: any) => {
     try {
-      const projects = campaign.projectIds.map((projectId: string) => ({
-        projectId,
-        userIds: campaign.selectedUsers[projectId] || []
-      }));
+      console.log('EnhancedCampaignsPage: Starting campaign via context:', campaign.id);
 
-      // NEW: Build request with sending mode configuration
-      const requestBody: any = {
-        projects,
-        campaignId: campaign.id,
-        sending_mode: campaign.sending_mode || (isLightning ? 'turbo' : 'turbo'),
-      };
+      // Use the context function which handles state updates and polling
+      await startCampaign(campaign.id);
 
-      // Add mode-specific configurations
-      if (campaign.sending_mode === 'turbo' || isLightning) {
-        requestBody.sending_mode = 'turbo';
-        requestBody.turbo_config = campaign.turbo_config || { auto: true };
-      } else if (campaign.sending_mode === 'throttled') {
-        requestBody.throttle_config = campaign.throttle_config || {
-          emails_per_ms: 0.01,  // 10 emails/second default
-          burst_capacity: 50,
-          workers: 5
-        };
-      } else if (campaign.sending_mode === 'scheduled') {
-        requestBody.schedule_config = campaign.schedule_config || {
-          scheduled_datetime: new Date(Date.now() + 3600000).toISOString(),  // 1 hour from now
-          timezone: 'UTC',
-          execution_mode: 'turbo'
-        };
-      }
-
-      console.log('EnhancedCampaignsPage: Request body =', requestBody);
-      console.log('EnhancedCampaignsPage: Making fetch request to:', `${API_BASE_URL}/campaigns/send`);
-
-      const response = await fetch(`${API_BASE_URL}/campaigns/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody)
-      });
-
-      console.log('EnhancedCampaignsPage: Response status =', response.status);
-      console.log('EnhancedCampaignsPage: Response ok =', response.ok);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.log('EnhancedCampaignsPage: Error response text =', errorText);
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
-
-      const responseData = await response.json();
-      console.log('EnhancedCampaignsPage: Response data =', responseData);
-
-      const modeLabel =
-        requestBody.sending_mode === 'turbo' ? 'Turbo' :
-          requestBody.sending_mode === 'throttled' ? 'Throttled' :
-            requestBody.sending_mode === 'scheduled' ? 'Scheduled' : 'Normal';
-
-      toast({
-        title: 'Campaign Started',
-        description: `Campaign "${campaign.name}" has started in ${modeLabel} mode.`,
-      });
-      startPollingCampaigns(); // Start polling after send
-    } catch (error) {
-      console.error('EnhancedCampaignsPage: Error in handleSendCampaign:', error);
+      // Note: startCampaign in context handles the toast and polling setup
+    } catch (error: any) {
+      console.error('EnhancedCampaignsPage: Error starting campaign:', error);
       toast({
         title: 'Error Starting Campaign',
         description: error.message || 'Failed to start campaign.',

@@ -2455,11 +2455,30 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
 
     logger.info(f"[{project_id}] Starting optimized lookup and send with {max_workers} workers.")
 
-    # 1. Optimized Batch User Lookup
+    # Optimized Batch User Lookup
     user_emails = {} # map uid -> email
     
-    # Chunk user_ids into batches of 100 (Firebase limit for get_users)
-    chunks = [user_ids[i:i + 100] for i in range(0, len(user_ids), 100)]
+    # FALLBACK: If user_ids is empty, fetch ALL users from the project
+    if not user_ids:
+        logger.info(f"[{project_id}] No user IDs provided. Fetching ALL users for campaign...")
+        try:
+            # Use list_users pagination to get everyone
+            page = auth.list_users(app=firebase_app, max_results=1000)
+            while page:
+                for user in page.users:
+                    if user.email:
+                        user_emails[user.uid] = user.email
+                if not page.next_page_token:
+                    break
+                page = auth.list_users(app=firebase_app, max_results=1000, page_token=page.next_page_token)
+            logger.info(f"[{project_id}] Fetched {len(user_emails)} users from auth.")
+        except Exception as e:
+            logger.error(f"[{project_id}] Failed to fetch all users: {e}")
+            return 0
+            
+    # Chunk user_ids into batches of 100 IF specific users provided
+    if user_ids:
+        chunks = [user_ids[i:i + 100] for i in range(0, len(user_ids), 100)]
     
     def fetch_batch_emails(batch_uids):
         found = {}
