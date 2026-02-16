@@ -1727,13 +1727,19 @@ async def bulk_import_projects_v2(
     }
     
     try:
-        # Read all service account files into a dictionary for quick lookup by filename
+        # Read all service account files into dictionaries for valid lookups
         sa_files_content = {}
+        sa_by_project_id = {}
+        
         for sa_file in service_accounts:
             content = await sa_file.read()
             try:
-                # Store by filename (and potentially by project_id inside if needed later)
-                sa_files_content[sa_file.filename] = json.loads(content)
+                data = json.loads(content)
+                sa_files_content[sa_file.filename] = data
+                
+                # Index by project_id inside the JSON for robust matching
+                if 'project_id' in data:
+                    sa_by_project_id[data['project_id']] = data
             except Exception as e:
                 logger.warning(f"Failed to parse JSON file {sa_file.filename}: {e}")
                 
@@ -1760,24 +1766,58 @@ async def bulk_import_projects_v2(
                 
             email, project_id, api_key, json_filename = parts[0], parts[1], parts[2], parts[3]
             
-            # Find matching service account
-            service_account_data = sa_files_content.get(json_filename)
-            
+            # --- Matching Logic ---
+            service_account_data = None
+            match_method = "none"
+
+            # 1. Try matching by Project ID (Most Robust)
+            # This handles cases where filename in text is wrong, but project_id matches the JSON content.
+            # AND it handles cases where JSON filename is long/generated.
+            if project_id in sa_by_project_id:
+                service_account_data = sa_by_project_id[project_id]
+                match_method = "project_id"
+
+            # 2. Try Exact Filename Match (Legacy)
             if not service_account_data:
-                # Try explicit match if filename in text file doesn't match uploaded filename exactly
-                # For example if path is included in text file
+                service_account_data = sa_files_content.get(json_filename)
+                if service_account_data: match_method = "filename"
+                
+            # 3. Try Cleaned Filename Match (e.g. if text has path)
+            if not service_account_data:
                 clean_json_filename = os.path.basename(json_filename)
                 service_account_data = sa_files_content.get(clean_json_filename)
+                if service_account_data: match_method = "clean_filename"
+
+            # 4. Try Prefix/Fuzzy Match (User Request)
+            # "detect it using the first words of the name"
+            if not service_account_data:
+                # Remove extension from text file entry to get the "stem"
+                # e.g. "pulse-plus-4293.jso" -> "pulse-plus-4293"
+                target_stem = os.path.splitext(os.path.basename(json_filename))[0]
                 
+                # Search all uploaded files
+                for fname, data in sa_files_content.items():
+                    # Check if uploaded filename starts with the stem
+                    # e.g. "pulse-plus-4293-firebase-adminsdk...json" starts with "pulse-plus-4293"
+                    if fname.startswith(target_stem):
+                        service_account_data = data
+                        match_method = "prefix_match"
+                        break
+            
             if not service_account_data:
                 results["failed"] += 1
                 results["details"].append({
                     "line": line_num,
                     "project_id": project_id,
-                    "error": f"Service account file '{json_filename}' not found in upload",
+                    "error": f"Service account not found. Checked project_id='{project_id}', filename='{json_filename}', and prefix match.",
                 })
                 continue
             
+            # Additional validation: check if project_id in JSON matches
+            sa_project_id = service_account_data.get('project_id')
+            if sa_project_id and sa_project_id != project_id:
+                logger.warning(f"Project ID mismatch for {project_id}: JSON has {sa_project_id}. Using JSON's project_id.")
+                
             # Create project dictionary
             new_project = {
                 "id": project_id,
@@ -1817,7 +1857,8 @@ async def bulk_import_projects_v2(
                 "line": line_num,
                 "project_id": project_id,
                 "status": "Success",
-                "action": action
+                "action": action,
+                "match_method": match_method
             })
             
         # Save all projects
