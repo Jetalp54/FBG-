@@ -2348,8 +2348,17 @@ async def start_campaign(campaign_id: str):
             'turbo_config': campaign.get('turbo_config'),
             'throttle_config': campaign.get('throttle_config'),
             'schedule_config': campaign.get('schedule_config'),
+        payload = {
+            'projects': projects_payload,
+            'sending_mode': campaign.get('sending_mode', 'turbo'),
+            'turbo_config': campaign.get('turbo_config'),
+            'throttle_config': campaign.get('throttle_config'),
+            'schedule_config': campaign.get('schedule_config'),
             'campaignId': campaign_id
         }
+        logger.info(f"[{campaign_id}] Start payload prepared. Mode: {payload['sending_mode']}. Projects: {len(projects_payload)}")
+        for p in projects_payload:
+            logger.info(f"   -> Project {p['projectId']}: {len(p['userIds'])} users")
         
         # Define background task
         async def run_background_process():
@@ -2480,31 +2489,38 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
     if user_ids:
         chunks = [user_ids[i:i + 100] for i in range(0, len(user_ids), 100)]
     
-    def fetch_batch_emails(batch_uids):
-        found = {}
-        try:
-            # Construct identifiers for get_users
-            identifiers = [auth.UserIdentifier(uid=uid) for uid in batch_uids]
-            result = auth.get_users(identifiers, app=firebase_app)
-            for user in result.users:
-                if user.email:
-                    found[user.uid] = user.email
-            # Log missing users?
-            if len(found) < len(batch_uids):
-                logger.debug(f"[{project_id}] Batch lookup found {len(found)}/{len(batch_uids)} users")
-        except Exception as e:
-            logger.error(f"[{project_id}] Batch user lookup failed: {e}")
-        return found
-
-    # Parallelize the lookup itself (optional but faster for 10k users = 100 batches)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as lookup_executor:
-        future_to_batch = {lookup_executor.submit(fetch_batch_emails, chunk): chunk for chunk in chunks}
-        for future in concurrent.futures.as_completed(future_to_batch):
+        def fetch_batch_emails(batch_uids):
+            found = {}
             try:
-                batch_result = future.result()
-                user_emails.update(batch_result)
+                # Correctly use UidIdentifier for batch lookup
+                identifiers = [auth.UidIdentifier(uid) for uid in batch_uids]
+                result = auth.get_users(identifiers, app=firebase_app)
+                for user in result.users:
+                    if user.email:
+                        found[user.uid] = user.email
+                if len(found) < len(batch_uids):
+                    logger.debug(f"[{project_id}] Batch lookup found {len(found)}/{len(batch_uids)} users")
             except Exception as e:
-                logger.error(f"[{project_id}] Lookup future failed: {e}")
+                logger.error(f"[{project_id}] Batch user lookup failed: {e}")
+                # Fallback: Try fetching individually if batch fails
+                for uid in batch_uids:
+                    try:
+                        u = auth.get_user(uid, app=firebase_app)
+                        if u.email:
+                            found[u.uid] = u.email
+                    except:
+                        pass
+            return found
+
+        # Parallelize the lookup itself
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as lookup_executor:
+            future_to_batch = {lookup_executor.submit(fetch_batch_emails, chunk): chunk for chunk in chunks}
+            for future in concurrent.futures.as_completed(future_to_batch):
+                try:
+                    batch_result = future.result()
+                    user_emails.update(batch_result)
+                except Exception as e:
+                    logger.error(f"[{project_id}] Lookup future failed: {e}")
 
     email_list = list(user_emails.items()) # List of (uid, email) tuples
     logger.info(f"[{project_id}] Resolved {len(email_list)} emails from {len(user_ids)} UIDs")
