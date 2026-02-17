@@ -2461,24 +2461,9 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
     # Optimized Batch User Lookup
     user_emails = {} # map uid -> email
     
-    # FALLBACK: If user_ids is empty, fetch ALL users from the project
-    if not user_ids:
-        logger.info(f"[{project_id}] No user IDs provided. Fetching ALL users for campaign...")
-        try:
-            # Use list_users pagination to get everyone
-            page = auth.list_users(app=firebase_app, max_results=1000)
-            while page:
-                for user in page.users:
-                    if user.email:
-                        user_emails[user.uid] = user.email
-                if not page.next_page_token:
-                    break
-                page = auth.list_users(app=firebase_app, max_results=1000, page_token=page.next_page_token)
-            logger.info(f"[{project_id}] Fetched {len(user_emails)} users from auth.")
-        except Exception as e:
-            logger.error(f"[{project_id}] Failed to fetch all users: {e}")
-            return 0
-            
+    # SAFETY: Always try to fetch ALL users if we suspect the passed list is problematic
+    # But to be performant, let's try the passed list first.
+    
     # Chunk user_ids into batches of 100 IF specific users provided
     if user_ids:
         chunks = [user_ids[i:i + 100] for i in range(0, len(user_ids), 100)]
@@ -2516,8 +2501,25 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
                 except Exception as e:
                     logger.error(f"[{project_id}] Lookup future failed: {e}")
 
+    # ULTIMATE FALLBACK: If we still have 0 emails, fetch ALL users from the project
+    if len(user_emails) == 0:
+        logger.info(f"[{project_id}] No emails found via ID lookup (provided {len(user_ids) if user_ids else 0} IDs). Fetching ALL users from project...")
+        try:
+            # Use list_users pagination to get everyone
+            page = auth.list_users(app=firebase_app, max_results=1000)
+            while page:
+                for user in page.users:
+                    if user.email:
+                        user_emails[user.uid] = user.email
+                if not page.next_page_token:
+                    break
+                page = auth.list_users(app=firebase_app, max_results=1000, page_token=page.next_page_token)
+            logger.info(f"[{project_id}] Fallback fetched {len(user_emails)} users from auth.")
+        except Exception as e:
+            logger.error(f"[{project_id}] Failed to fetch all users via fallback: {e}")
+
     email_list = list(user_emails.items()) # List of (uid, email) tuples
-    logger.info(f"[{project_id}] Resolved {len(email_list)} emails from {len(user_ids)} UIDs")
+    logger.info(f"[{project_id}] Resolved {len(email_list)} emails from {len(user_ids) if user_ids else 'ALL'} UIDs")
 
     # --- CAMPAIGN TRACKING ---
     create_campaign_result(campaign_id, project_id, len(user_emails))
