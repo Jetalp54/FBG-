@@ -133,10 +133,24 @@ def init_database():
                 template TEXT,
                 status VARCHAR(50) DEFAULT 'draft',
                 owner_id INTEGER REFERENCES app_users(id) ON DELETE CASCADE,
+                processed INTEGER DEFAULT 0,
+                successful INTEGER DEFAULT 0,
+                failed INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        
+        # Migration: Add progress columns if they don't exist
+        try:
+            cursor.execute("""
+                ALTER TABLE campaigns 
+                ADD COLUMN IF NOT EXISTS processed INTEGER DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS successful INTEGER DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS failed INTEGER DEFAULT 0
+            """)
+        except Exception as e:
+            logger.info(f"Progress columns may already exist: {e}")
         
         # Create admin user if doesn't exist
         cursor.execute("SELECT id FROM app_users WHERE username = 'admin'")
