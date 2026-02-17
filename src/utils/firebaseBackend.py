@@ -3241,6 +3241,36 @@ def update_campaign_result(campaign_id: str, project_id: str, success: bool, use
         campaign_results[key]["end_time"] = datetime.now().isoformat()
         campaign_results[key]["status"] = "completed" if campaign_results[key]["failed"] == 0 else "partial"
     save_campaign_results_to_file()
+    
+    # CRITICAL FIX: Also update the campaign object itself with progress data for frontend display
+    try:
+        if os.getenv('USE_DATABASE') == 'true':
+            # Database mode: Update campaign in DB
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE campaigns 
+                SET processed = %s, successful = %s, failed = %s 
+                WHERE id = %s
+            """, (processed, campaign_results[key]["successful"], campaign_results[key]["failed"], campaign_id))
+            conn.commit()
+            cursor.close()
+            conn.close()
+        else:
+            # File mode: Update campaign in CAMPAIGNS_FILE
+            if os.path.exists(CAMPAIGNS_FILE):
+                with open(CAMPAIGNS_FILE, 'r') as f:
+                    campaigns_data = json.load(f)
+                for campaign in campaigns_data:
+                    if campaign.get('id') == campaign_id:
+                        campaign['processed'] = processed
+                        campaign['successful'] = campaign_results[key]["successful"]
+                        campaign['failed'] = campaign_results[key]["failed"]
+                        break
+                with open(CAMPAIGNS_FILE, 'w') as f:
+                    json.dump(campaigns_data, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to update campaign progress in storage: {e}")
 
 def get_campaign_results(campaign_id: Optional[str] = None, project_id: Optional[str] = None):
     """Get campaign results, optionally filtered"""
