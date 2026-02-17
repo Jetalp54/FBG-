@@ -58,7 +58,7 @@ export const EnhancedCampaignsPage = () => {
   const [selectedUsers, setSelectedUsers] = useState<{ [projectId: string]: string[] }>({});
   const [campaignName, setCampaignName] = useState('');
   const [batchSize, setBatchSize] = useState(50);
-  const [workers, setWorkers] = useState(5);
+  const [workers, setWorkers] = useState(50);
   const [loadingUsers, setLoadingUsers] = useState<{ [key: string]: boolean }>({});
 
   // NEW: Sending mode configuration
@@ -924,6 +924,29 @@ export const EnhancedCampaignsPage = () => {
 
             {/* Sending Mode Selector - Enterprise Feature */}
             <SendingModeSelector value={sendingMode} onChange={setSendingMode} />
+
+            {/* Turbo Mode Worker Configuration */}
+            {sendingMode.mode === 'turbo' && (
+              <div className="space-y-2 mt-4 p-4 bg-blue-900/20 border border-blue-500/30 rounded-lg">
+                <div className="flex items-center gap-2 mb-2">
+                  <Zap className="w-4 h-4 text-blue-400" />
+                  <Label htmlFor="turboWorkers" className="text-blue-100 font-semibold">Turbo Concurrency (Workers)</Label>
+                </div>
+                <Input
+                  id="turboWorkers"
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={workers}
+                  onChange={(e) => setWorkers(parseInt(e.target.value) || 50)}
+                  className="bg-gray-700 border-gray-600 text-white"
+                />
+                <p className="text-xs text-blue-300/80">
+                  Number of parallel workers (1-100). Higher values increase speed but consume more CPU/RAM.
+                  Recommended: 50.
+                </p>
+              </div>
+            )}
 
             {/* Actions */}
             <div className="flex gap-2">

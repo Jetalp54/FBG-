@@ -2529,6 +2529,8 @@ async def start_campaign(campaign_id: str):
             'schedule_config': campaign.get('schedule_config'),
             'sending_limit': campaign.get('sending_limit'),
             'sending_offset': campaign.get('sending_offset', 0),
+            'workers': campaign.get('workers', 50), # Pass configured workers
+            'batchSize': campaign.get('batchSize', 50), # Pass configured batch size
             'campaignId': campaign_id
         }
         logger.info(f"[{campaign_id}] Start payload prepared. Mode: {payload['sending_mode']}. Projects: {len(projects_payload)}")
@@ -2647,9 +2649,10 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
     
     # Turbo/Lightning mode scaling
     if lightning:
-        # Allow up to 200 workers for turbo mode if CPU allows, or static high number
-        # 10k emails / 60s = 166 req/s.  With 200 workers, each needs to do < 1 req/s. Very doable.
-        max_workers = 200 
+        # Allow up to 100 workers for turbo mode (200 was causing crashes)
+        # Check if workers was passed explicitly, otherwise default to 50
+        max_workers = int(workers) if workers else 50
+        max_workers = min(max_workers, 100) # Cap at 100 to prevent OS thread exhaustion
     else:
         max_workers = min(workers, 50)
 
@@ -2728,7 +2731,9 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
     logger.info(f"[{project_id}] Resolved {len(email_list)} emails from {len(user_ids) if user_ids else 'ALL'} UIDs")
 
     # --- CAMPAIGN TRACKING ---
-    create_campaign_result(campaign_id, project_id, len(user_emails))
+    # create_campaign_result was already called at the start of the function.
+    # calling it again here would RESET progress to 0, which is bad.
+    # create_campaign_result(campaign_id, project_id, len(user_emails))
     
     def fire_email_task(item):
         uid, email = item
@@ -2847,12 +2852,18 @@ async def send_campaign(request: Request):
                     # Run the blocking fire_all_emails function
                     logger.info(f"⚡ [TURBO] Thread started for project {p_id}")
                     
-                    # Force 200 workers for maximum throughput
+                    # Use configured workers or default to 50
+                    turbo_workers = 50
+                    if request_data.get('turbo_config'):
+                        turbo_workers = request_data.get('turbo_config', {}).get('workers', 50)
+                    elif request_data.get('workers'):
+                         turbo_workers = request_data.get('workers')
+                    
                     successful = fire_all_emails(
                         p_id, 
                         u_ids, 
                         c_id, 
-                        200, 
+                        turbo_workers, 
                         True, 
                         None, 
                         request_data.get('sending_limit'), 
