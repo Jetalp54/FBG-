@@ -1,7 +1,13 @@
 #!/bin/bash
 echo "🚀 Starting Enterprise Firebase Manager..."
 
-# 1. Check Redis
+# 1. Cleanup Old Processes
+echo "🧹 Cleaning up old processes..."
+pkill -f "celery worker" || true
+pkill -f "firebaseBackend.py" || true
+sleep 2
+
+# 2. Check Redis
 if ! command -v redis-server &> /dev/null; then
     echo "❌ Redis is not installed. Installing..."
     sudo apt update && sudo apt install -y redis-server python3-venv python3-pip

@@ -6401,11 +6401,12 @@ def monitor_redis_progress():
         
         while True:
             try:
-                # Scan for active campaign keys
+                # Scan for active campaign project stats
+                # Pattern: campaign:{campaign_id}:{project_id}:stats
                 keys = []
                 cursor = '0'
                 while cursor != 0:
-                    cursor, batch = r.scan(cursor=cursor, match='campaign_status:*', count=100)
+                    cursor, batch = r.scan(cursor=cursor, match='campaign:*:*:stats', count=500)
                     keys.extend(batch)
                 
                 if not keys:
@@ -6422,7 +6423,8 @@ def monitor_redis_progress():
                 for key, data in zip(keys, results):
                     if not data: continue
                     parts = key.split(':')
-                    if len(parts) != 3: continue
+                    # Expecting campaign:{cid}:{pid}:stats (4 parts)
+                    if len(parts) != 4: continue
                     
                     c_id, p_id = parts[1], parts[2]
                     
@@ -6436,7 +6438,7 @@ def monitor_redis_progress():
                         campaign_results[mem_key] = {
                             'project_id': p_id, 
                             'successful': 0, 
-                            'failed': 0,
+                            'failed': 0, 
                             'total_users': 0,
                             'status': 'running'
                         }
@@ -6444,6 +6446,8 @@ def monitor_redis_progress():
                     # Update Granular Stats
                     campaign_results[mem_key]['successful'] = succ
                     campaign_results[mem_key]['failed'] = fail
+                    # If total_users is 0 (missing), we might want to infer it or leave it
+                    # But crucially, we update success/fail which drives the progress bar
                     
                     updated_campaign_ids.add(c_id)
 
