@@ -1080,6 +1080,19 @@ def load_data_lists_from_file():
         logger.error(f"Error loading data lists: {str(e)}")
         data_lists = {}
 
+def load_admin_service_account():
+    """Load admin service account credentials from file"""
+    global admin_credentials
+    try:
+        if os.path.exists(ADMIN_SERVICE_ACCOUNT_FILE):
+            with open(ADMIN_SERVICE_ACCOUNT_FILE, 'r') as f:
+                admin_credentials = json.load(f)
+            logger.info(f"Loaded admin service account from {ADMIN_SERVICE_ACCOUNT_FILE}")
+            return True
+    except Exception as e:
+        logger.error(f"Failed to load admin service account: {e}")
+    return False
+
 def reset_daily_counts_at_midnight():
     def reset_loop():
         while True:
@@ -1101,6 +1114,7 @@ if os.getenv('USE_DATABASE') != 'true':
     load_daily_counts()
     load_campaign_results_from_file()  # New: Load campaign results
     load_data_lists_from_file()  # NEW: Load data lists
+    load_admin_service_account() # NEW: Load admin service account
 
 # Always start the reset thread
 reset_daily_counts_at_midnight()
@@ -1389,7 +1403,8 @@ async def remove_project(project_id: str):
 @app.delete("/projects/{project_id}/google-cloud")
 async def delete_project_from_google_cloud(project_id: str):
     """
-    Delete a Firebase project from Google Cloud using project's own service account credentials.
+    Delete a Firebase project from Google Cloud.
+    Tries to use Admin Service Account first, then falls back to project's own credentials.
     This will permanently delete the project from Google Cloud Console.
     """
     if not GOOGLE_CLOUD_AVAILABLE:
@@ -1401,40 +1416,53 @@ async def delete_project_from_google_cloud(project_id: str):
     if project_id not in projects:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    # Get project's own service account credentials
-    project_data = projects[project_id]
-    service_account_data = project_data.get('serviceAccount')
-    
-    if not service_account_data:
-        raise HTTPException(
-            status_code=500,
-            detail="Project service account not found"
-        )
-    
     try:
-        # Create credentials from project's service account
-        project_creds = service_account.Credentials.from_service_account_info(service_account_data)
+        client = None
+        creds_source = "unknown"
+
+        # 1. Try Admin Service Account (Preferred)
+        if admin_credentials:
+            try:
+                logger.info(f"Attempting to delete project {project_id} using Admin Service Account...")
+                admin_creds = service_account.Credentials.from_service_account_info(admin_credentials)
+                client = resourcemanager.ProjectsClient(credentials=admin_creds)
+                creds_source = "admin_service_account"
+            except Exception as e:
+                logger.warning(f"Failed to create client with admin credentials: {e}")
+
+        # 2. Fallback to Project Service Account
+        if not client:
+            project_data = projects[project_id]
+            service_account_data = project_data.get('serviceAccount')
+            
+            if service_account_data:
+                try:
+                    logger.info(f"Attempting to delete project {project_id} using project credentials...")
+                    project_creds = service_account.Credentials.from_service_account_info(service_account_data)
+                    client = resourcemanager.ProjectsClient(credentials=project_creds)
+                    creds_source = "project_service_account"
+                except Exception as e:
+                    logger.warning(f"Failed to create client with project credentials: {e}")
         
-        logger.info(f"Attempting to delete project {project_id} from Google Cloud using project credentials...")
-        
-        # Create Resource Manager client with project credentials
-        client = resourcemanager.ProjectsClient(credentials=project_creds)
-        
-        # Delete the project
-        # Note: This will permanently delete the project from Google Cloud
+        if not client:
+             raise HTTPException(
+                status_code=500,
+                detail="No valid credentials found to perform deletion. Please upload an Admin Service Account."
+            )
+
+        # Execute Deletion
         operation = client.delete_project(name=f"projects/{project_id}")
-        
-        # Wait for the operation to complete
         result = operation.result()
         
-        logger.info(f"Successfully deleted project {project_id} from Google Cloud")
+        logger.info(f"Successfully deleted project {project_id} from Google Cloud using {creds_source}")
         
         # Also remove from local storage
         await remove_project(project_id)
         
         write_audit_log('admin', 'delete_project_from_google_cloud', {
             'project_id': project_id,
-            'status': 'success'
+            'status': 'success',
+            'creds_source': creds_source
         })
         
         return {
@@ -1458,7 +1486,8 @@ async def delete_project_from_google_cloud(project_id: str):
 @app.post("/projects/bulk-delete-google-cloud")
 async def bulk_delete_projects_from_google_cloud(request: Request):
     """
-    Bulk delete multiple Firebase projects from Google Cloud using each project's own credentials.
+    Bulk delete multiple Firebase projects from Google Cloud.
+    Tries Admin Service Account first, then falls back to individual project credentials.
     """
     if not GOOGLE_CLOUD_AVAILABLE:
         raise HTTPException(
@@ -1470,48 +1499,45 @@ async def bulk_delete_projects_from_google_cloud(request: Request):
         data = await request.json()
         project_ids = data.get('projectIds', [])
         
-        if not isinstance(project_ids, list):
-            raise HTTPException(status_code=400, detail="Expected list of project IDs")
-        
-        if not project_ids:
+        if not isinstance(project_ids, list) or not project_ids:
             raise HTTPException(status_code=400, detail="No project IDs provided")
         
         results = []
         successful = []
         failed = []
         
+        # Initialize Admin Client if available
+        admin_client = None
+        if admin_credentials:
+            try:
+                admin_creds = service_account.Credentials.from_service_account_info(admin_credentials)
+                admin_client = resourcemanager.ProjectsClient(credentials=admin_creds)
+                logger.info("Initialized Admin Client for bulk deletion")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Admin Client: {e}")
+
         for project_id in project_ids:
             try:
-                if project_id not in projects:
-                    failed.append({
-                        "project_id": project_id,
-                        "reason": "Project not found in local storage"
-                    })
-                    continue
-                
-                # Get project's own service account credentials
-                project_data = projects[project_id]
-                service_account_data = project_data.get('serviceAccount')
-                
-                if not service_account_data:
-                    failed.append({
-                        "project_id": project_id,
-                        "reason": "Project service account not found"
-                    })
-                    continue
-                
-                # Create credentials from project's service account
-                project_creds = service_account.Credentials.from_service_account_info(service_account_data)
-                
-                logger.info(f"Attempting to delete project {project_id} from Google Cloud using project credentials...")
-                
-                # Create Resource Manager client with project credentials
-                client = resourcemanager.ProjectsClient(credentials=project_creds)
-                
-                # Delete the project using project credentials
+                client = admin_client
+                creds_source = "admin_service_account"
+
+                # If no admin client, try project credentials
+                if not client:
+                    if project_id not in projects:
+                        raise Exception("Project not found locally and no Admin credentials available")
+                    
+                    project_data = projects[project_id]
+                    service_account_data = project_data.get('serviceAccount')
+                    if not service_account_data:
+                         raise Exception("No service account data found for project")
+                    
+                    project_creds = service_account.Credentials.from_service_account_info(service_account_data)
+                    client = resourcemanager.ProjectsClient(credentials=project_creds)
+                    creds_source = "project_service_account"
+
+                # Delete the project
+                logger.info(f"Deleting {project_id} using {creds_source}...")
                 operation = client.delete_project(name=f"projects/{project_id}")
-                
-                # Wait for the operation to complete
                 result = operation.result()
                 
                 # Also remove from local storage
@@ -1521,15 +1547,13 @@ async def bulk_delete_projects_from_google_cloud(request: Request):
                 results.append({
                     "project_id": project_id,
                     "status": "success",
-                    "operation": str(result)
+                    "operation": str(result),
+                    "source": creds_source
                 })
-                
-                logger.info(f"Successfully deleted project {project_id} from Google Cloud")
+                logger.info(f"Successfully deleted {project_id}")
                 
             except Exception as e:
-                error_msg = f"Failed to delete project {project_id}: {str(e)}"
-                logger.error(error_msg)
-                
+                logger.error(f"Failed to delete {project_id}: {e}")
                 failed.append({
                     "project_id": project_id,
                     "reason": str(e)
@@ -1540,7 +1564,6 @@ async def bulk_delete_projects_from_google_cloud(request: Request):
                     "error": str(e)
                 })
         
-        # Write audit log
         write_audit_log('admin', 'bulk_delete_projects_from_google_cloud', {
             'project_ids': project_ids,
             'successful': successful,
@@ -1558,9 +1581,40 @@ async def bulk_delete_projects_from_google_cloud(request: Request):
         }
         
     except Exception as e:
-        error_msg = f"Bulk delete operation failed: {str(e)}"
-        logger.error(error_msg)
-        raise HTTPException(status_code=500, detail=error_msg)
+        logger.error(f"Bulk delete error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class AdminServiceAccount(BaseModel):
+    serviceAccount: Dict[str, Any]
+
+@app.post("/admin/service-account")
+async def upload_admin_service_account(data: AdminServiceAccount, _: None = Depends(verify_basic_admin)):
+    """Upload admin service account credentials for Google Cloud operations"""
+    try:
+        global admin_credentials
+        
+        # Verify credentials structure
+        sa = data.serviceAccount
+        if not sa.get('project_id') or not sa.get('private_key') or not sa.get('client_email'):
+             raise HTTPException(status_code=400, detail="Invalid service account JSON structure")
+
+        # Save to file
+        with open(ADMIN_SERVICE_ACCOUNT_FILE, 'w') as f:
+            json.dump(sa, f, indent=2)
+            
+        # Update in-memory
+        admin_credentials = sa
+        logger.info(f"Admin service account updated for project: {sa.get('project_id')}")
+        
+        return {
+            "success": True, 
+            "message": "Admin service account uploaded successfully",
+            "project_id": sa.get('project_id'),
+            "client_email": sa.get('client_email')
+        }
+    except Exception as e:
+        logger.error(f"Failed to save admin service account: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/projects")
 async def list_projects(request: Request, search: Optional[str] = None, limit: Optional[int] = None, offset: Optional[int] = None):
