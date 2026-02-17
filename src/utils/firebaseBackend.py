@@ -165,16 +165,33 @@ def init_database():
             CREATE INDEX IF NOT EXISTS idx_campaign_logs_project_id ON campaign_logs(project_id);
         ''')
         
-        # Migration: Add progress columns if they don't exist
+        # Migration: Add progress columns and configuration columns if they don't exist
         try:
+            # Progress Columns
             cursor.execute("""
                 ALTER TABLE campaigns 
                 ADD COLUMN IF NOT EXISTS processed INTEGER DEFAULT 0,
                 ADD COLUMN IF NOT EXISTS successful INTEGER DEFAULT 0,
                 ADD COLUMN IF NOT EXISTS failed INTEGER DEFAULT 0
             """)
+            
+            # Configuration Columns (Crucial for Persistence)
+            cursor.execute("""
+                ALTER TABLE campaigns
+                ADD COLUMN IF NOT EXISTS sending_mode VARCHAR(50) DEFAULT 'turbo',
+                ADD COLUMN IF NOT EXISTS project_ids JSONB DEFAULT '[]',
+                ADD COLUMN IF NOT EXISTS turbo_config JSONB DEFAULT '{}',
+                ADD COLUMN IF NOT EXISTS throttle_config JSONB DEFAULT '{}',
+                ADD COLUMN IF NOT EXISTS schedule_config JSONB DEFAULT '{}',
+                ADD COLUMN IF NOT EXISTS target_user_count INTEGER DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS campaign_uuid VARCHAR(100)
+            """)
+            
+            # Backfill UUIDs for existing rows if needed (using ID as fallback)
+            cursor.execute("UPDATE campaigns SET campaign_uuid = CAST(id AS VARCHAR) WHERE campaign_uuid IS NULL")
+            conn.commit()
         except Exception as e:
-            logger.info(f"Progress columns may already exist: {e}")
+            logger.info(f"Schema migration note: {e}")
         
         # Create admin user if doesn't exist
         cursor.execute("SELECT id FROM app_users WHERE username = 'admin'")
@@ -2466,12 +2483,14 @@ async def create_campaign(campaign: CampaignCreate, request: Request):
             "schedule_config": campaign.schedule_config
         }
         
+        # Save to Memory & File (Single Source of Truth)
         active_campaigns[campaign_id] = campaign_data
         save_campaigns_to_file()
         
         return {"success": True, "campaign_id": campaign_id, "campaign": campaign_data}
         
     except Exception as e:
+        logger.error(f"Create Campaign Error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create campaign: {str(e)}")
 
 @app.get("/campaigns")
@@ -2488,27 +2507,24 @@ async def list_campaigns(request: Request, page: int = 1, limit: int = 10):
         # Load campaigns from file to get ownership info
         campaigns_data = load_campaigns_from_file()
         
-        # DEBUG LOGGING for Campaign Progress Issue
-        if campaigns_data:
-             for c in campaigns_data:
-                 if 'processed' in c and c['processed'] > 0:
-                     logger.info(f"DEBUG: Found campaign in file with progress > 0: {c['id']} - {c['processed']}")
-                 
-             if is_admin:
-                 current_mem_campaigns = list(active_campaigns.values())
-                 for c in current_mem_campaigns:
-                     if 'processed' in c and c['processed'] > 0:
-                         logger.info(f"DEBUG: Found campaign in memory with progress > 0: {c['id']} - {c['processed']}")
+        # Sync with active_campaigns memory for live stats
+        # This is where we merge the Redis-driven states into the persistent file list
+        synced_list = []
+        for c in campaigns_data:
+            c_id = c.get('id')
+            if c_id in active_campaigns:
+                # Use memory version which has live stats
+                synced_list.append(active_campaigns[c_id])
+            else:
+                synced_list.append(c)
         
         # Filter campaigns based on user access
         if is_admin:
             # Admin sees all campaigns
-            campaigns_list = list(active_campaigns.values())
+            campaigns_list = synced_list
         else:
             # Users see only their own campaigns
-            user_campaigns = [c for c in campaigns_data if c.get('ownerId') == current_user]
-            # Only show campaigns that are also in active_campaigns
-            campaigns_list = [c for c in user_campaigns if c.get('id') in active_campaigns]
+            campaigns_list = [c for c in synced_list if c.get('ownerId') == current_user]
         
         # Sort by creation date (newest first)
         campaigns_list.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
@@ -2518,6 +2534,20 @@ async def list_campaigns(request: Request, page: int = 1, limit: int = 10):
         total_pages = (total_campaigns + limit - 1) // limit
         start_index = (page - 1) * limit
         end_index = start_index + limit
+        
+        final_list = campaigns_list[start_index:end_index]
+        
+        return {
+            "campaigns": final_list,
+            "total": total_campaigns,
+            "page": page,
+            "pages": total_pages,
+            "user": current_user, 
+            "source": "file_memory"
+        }
+    except Exception as e:
+        logger.error(f"List Campaigns Error: {e}")
+        return {"campaigns": [], "total": 0, "page": page, "pages": 0, "error": str(e)}
         
         # Get campaigns for current page
         paginated_campaigns = campaigns_list[start_index:end_index]
@@ -6383,9 +6413,102 @@ async def get_campaign_logs(campaign_id: str, limit: int = 50, offset: int = 0, 
 
 
 
+# Startup: Recover Active State from Redis
+def recover_state_from_redis():
+    """
+    On restart, scan Redis for any 'running' campaign stats 
+    and hydrate the in-memory active_campaigns.
+    """
+    try:
+        redis_host = os.getenv('REDIS_HOST', 'localhost')
+        r = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
+        
+        # 1. Load known campaigns from file
+        file_campaigns = load_campaigns_from_file()
+        if not file_campaigns:
+            logger.info("No campaigns in file to recover.")
+            return
+
+        # 2. Scan Redis for active stats
+        # Pattern: campaign:{cid}:{pid}:stats
+        cursor = '0'
+        found_keys = []
+        while cursor != 0:
+            cursor, batch = r.scan(cursor=cursor, match='campaign:*:*:stats', count=100)
+            found_keys.extend(batch)
+            
+        if not found_keys:
+            logger.info("No active campaigns found in Redis.")
+            return
+
+        logger.info(f"🔄 Found {len(found_keys)} stat keys in Redis. recovering...")
+        
+        # 3. Update Memory
+        count = 0
+        for key in found_keys:
+            # key: campaign:{cid}:{pid}:stats
+            parts = key.split(':')
+            if len(parts) != 4: continue
+            
+            c_id = parts[1]
+            p_id = parts[2]
+            
+            # Fetch stats
+            stats = r.hgetall(key)
+            if not stats: continue
+            
+            succ = int(stats.get('successful', 0))
+            fail = int(stats.get('failed', 0))
+            
+            # Find campaign in file data
+            campaign = next((c for c in file_campaigns if c['id'] == c_id), None)
+            
+            if campaign:
+                # Add to active_campaigns if not there
+                if c_id not in active_campaigns:
+                    active_campaigns[c_id] = campaign.copy()
+                    # Ensure stats are initialized
+                    if 'processed' not in active_campaigns[c_id]: active_campaigns[c_id]['processed'] = 0
+                    if 'successful' not in active_campaigns[c_id]: active_campaigns[c_id]['successful'] = 0
+                    if 'failed' not in active_campaigns[c_id]: active_campaigns[c_id]['failed'] = 0
+                
+                # Update Granular (Optional but good for monitor)
+                mem_key = f"{c_id}_{p_id}"
+                campaign_results[mem_key] = {
+                    'project_id': p_id,
+                    'successful': succ,
+                    'failed': fail,
+                    'status': 'running'
+                }
+                count += 1
+
+        # 4. Trigger a recalc of totals
+        for c_id, campaign in active_campaigns.items():
+            t_succ = 0
+            t_fail = 0
+            for k, v in campaign_results.items():
+                if k.startswith(f"{c_id}_"):
+                    t_succ += v.get('successful', 0)
+                    t_fail += v.get('failed', 0)
+            
+            if t_succ + t_fail > 0:
+                campaign['successful'] = t_succ
+                campaign['failed'] = t_fail
+                campaign['processed'] = t_succ + t_fail
+                logger.info(f"   -> Recovered {c_id}: {t_succ} sent, {t_fail} failed")
+
+        logger.info(f"✅ Recovered state for {len(active_campaigns)} campaigns.")
+
+    except Exception as e:
+        logger.error(f"Failed to recover state from Redis: {e}")
+
 # --- ENTERPRISE MONITORING ---
 @app.on_event("startup")
 async def startup_event():
+    # 1. Recover State from File & Redis
+    recover_state_from_redis()
+    
+    # 2. Start Redis Monitor
     logger.info("🚀 Starting Enterprise Redis Monitor...")
     threading.Thread(target=monitor_redis_progress, daemon=True).start()
 
