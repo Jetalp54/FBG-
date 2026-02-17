@@ -1451,10 +1451,20 @@ async def delete_project_from_google_cloud(project_id: str):
             )
 
         # Execute Deletion
-        operation = client.delete_project(name=f"projects/{project_id}")
-        result = operation.result()
+        try:
+            operation = client.delete_project(name=f"projects/{project_id}")
+            result = operation.result()
+            success_msg = f"Successfully deleted project {project_id} from Google Cloud using {creds_source}"
+        except Exception as e:
+            # Check if project is already deleted
+            error_str = str(e)
+            if "Project has been deleted" in error_str or "CONSUMER_INVALID" in error_str:
+                success_msg = f"Project {project_id} was already deleted from Google Cloud (verified). Removing from local storage."
+                result = "Already deleted"
+            else:
+                raise e
         
-        logger.info(f"Successfully deleted project {project_id} from Google Cloud using {creds_source}")
+        logger.info(success_msg)
         
         # Also remove from local storage
         await remove_project(project_id)
@@ -1462,12 +1472,13 @@ async def delete_project_from_google_cloud(project_id: str):
         write_audit_log('admin', 'delete_project_from_google_cloud', {
             'project_id': project_id,
             'status': 'success',
-            'creds_source': creds_source
+            'creds_source': creds_source,
+            'note': success_msg
         })
         
         return {
             "success": True,
-            "message": f"Project {project_id} has been permanently deleted from Google Cloud",
+            "message": success_msg,
             "operation": str(result)
         }
         
@@ -1537,8 +1548,20 @@ async def bulk_delete_projects_from_google_cloud(request: Request):
 
                 # Delete the project
                 logger.info(f"Deleting {project_id} using {creds_source}...")
-                operation = client.delete_project(name=f"projects/{project_id}")
-                result = operation.result()
+                
+                try:
+                    operation = client.delete_project(name=f"projects/{project_id}")
+                    result = operation.result()
+                    status_msg = "success"
+                except Exception as e:
+                    # Check if project is already deleted
+                    error_str = str(e)
+                    if "Project has been deleted" in error_str or "CONSUMER_INVALID" in error_str:
+                        status_msg = "already_deleted"
+                        result = "Already deleted"
+                        logger.info(f"Project {project_id} was already deleted. Removing local reference.")
+                    else:
+                        raise e
                 
                 # Also remove from local storage
                 await remove_project(project_id)
@@ -1548,9 +1571,10 @@ async def bulk_delete_projects_from_google_cloud(request: Request):
                     "project_id": project_id,
                     "status": "success",
                     "operation": str(result),
-                    "source": creds_source
+                    "source": creds_source,
+                    "note": status_msg
                 })
-                logger.info(f"Successfully deleted {project_id}")
+                logger.info(f"Successfully processed deletion for {project_id}")
                 
             except Exception as e:
                 logger.error(f"Failed to delete {project_id}: {e}")
