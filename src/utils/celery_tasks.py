@@ -8,6 +8,7 @@ import firebase_admin
 from firebase_admin import credentials, auth
 import pyrebase
 import redis
+import asyncio
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -15,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 # Redis Connection for Progress Tracking
 redis_client = redis.Redis.from_url(celery_app.conf.broker_url)
+
+# Rate Limiter Import
+from src.utils.rate_limiter import RedisRateLimiter
 
 # Global Cache for Initialized Apps in this Worker Process
 firebase_apps = {}
@@ -82,11 +86,11 @@ def initialize_firebase_for_project(project_id):
         return None, None
 
 @celery_app.task(bind=True, max_retries=3)
-def process_campaign_batch(self, campaign_id, project_id, user_ids):
+def process_campaign_batch(self, campaign_id, project_id, user_ids, rate_limit=None):
     """
     Celery Task: Process a batch of UIDs for a campaign.
     1. Resolves UIDs to Emails.
-    2. Sends Password Reset Emails.
+    2. Sends Password Reset Emails (Rate Limited).
     3. Updates Progress in Redis.
     """
     admin_app, client_app = initialize_firebase_for_project(project_id)
@@ -97,6 +101,12 @@ def process_campaign_batch(self, campaign_id, project_id, user_ids):
         return {'success': 0, 'failed': len(user_ids), 'error': 'Init Failed'}
 
     auth_client = client_app.auth()
+    
+    # Initialize Global Rate Limiter if configured
+    limiter = None
+    if rate_limit and int(rate_limit) > 0:
+        limit_key = f"campaign:{campaign_id}:global_limit"
+        limiter = RedisRateLimiter(redis_client, limit_key, int(rate_limit))
     
     # 1. Resolve Emails (Batch Lookup)
     uid_email_map = {}
@@ -123,6 +133,12 @@ def process_campaign_batch(self, campaign_id, project_id, user_ids):
     logs_to_insert = []
     
     for uid in user_ids:
+        # Rate Limiting Check
+        if limiter:
+            allowed, wait_time = limiter.acquire()
+            if not allowed and wait_time > 0:
+                time.sleep(wait_time)
+
         email = uid_email_map.get(uid)
         
         # Prepare Log Entry Template

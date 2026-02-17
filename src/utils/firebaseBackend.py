@@ -2964,14 +2964,16 @@ async def send_campaign(request: Request):
                     if not u_ids:
                         continue
                         
-                    # Configurable Batch Size
+                    # Configurable Batch Size & Rate Limit
                     batch_size = request_data.get('batchSize', 100)
+                    rate_limit = request_data.get('rate_limit') # Emails per second (Global)
+                    
                     batches = [u_ids[i:i + batch_size] for i in range(0, len(u_ids), batch_size)]
                     
-                    logger.info(f"[{p_id}] Enqueueing {len(batches)} batches for {len(u_ids)} users")
+                    logger.info(f"[{p_id}] Enqueueing {len(batches)} batches for {len(u_ids)} users. Global Limit: {rate_limit}/s")
                     
                     for batch in batches:
-                        process_campaign_batch.delay(campaign_id, p_id, batch)
+                        process_campaign_batch.delay(campaign_id, p_id, batch, rate_limit)
                         total_batches += 1
                         total_users += len(batch)
 
