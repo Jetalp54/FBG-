@@ -1521,7 +1521,12 @@ async def bulk_delete_projects_from_google_cloud(request: Request):
         admin_client = None
         if admin_credentials:
             try:
-                admin_creds = service_account.Credentials.from_service_account_info(admin_credentials)
+                if isinstance(admin_credentials, dict):
+                    admin_creds = service_account.Credentials.from_service_account_info(admin_credentials)
+                else:
+                    # Assume it's already a Credentials object or compatible
+                    admin_creds = admin_credentials
+                
                 admin_client = resourcemanager.ProjectsClient(credentials=admin_creds)
                 logger.info("Initialized Admin Client for bulk deletion")
             except Exception as e:
