@@ -3287,17 +3287,31 @@ def update_campaign_result(campaign_id: str, project_id: str, success: bool, use
             conn.close()
         else:
             # File mode: Update campaign in CAMPAIGNS_FILE
+            logger.info(f"Attempting to update campaign {campaign_id} in {CAMPAIGNS_FILE}")
+            logger.info(f"Progress data: processed={processed}, successful={campaign_results[key]['successful']}, failed={campaign_results[key]['failed']}")
             if os.path.exists(CAMPAIGNS_FILE):
                 with open(CAMPAIGNS_FILE, 'r') as f:
                     campaigns_data = json.load(f)
+                logger.info(f"Loaded {len(campaigns_data)} campaigns from file")
+                
+                campaign_found = False
                 for campaign in campaigns_data:
                     if campaign.get('id') == campaign_id:
+                        logger.info(f"Found campaign {campaign_id}, updating progress fields")
                         campaign['processed'] = processed
                         campaign['successful'] = campaign_results[key]["successful"]
                         campaign['failed'] = campaign_results[key]["failed"]
+                        campaign_found = True
                         break
-                with open(CAMPAIGNS_FILE, 'w') as f:
-                    json.dump(campaigns_data, f, indent=2)
+                
+                if campaign_found:
+                    with open(CAMPAIGNS_FILE, 'w') as f:
+                        json.dump(campaigns_data, f, indent=2)
+                    logger.info(f"Successfully updated campaign {campaign_id} in campaigns.json")
+                else:
+                    logger.warning(f"Campaign {campaign_id} NOT found in campaigns.json!")
+            else:
+                logger.error(f"CAMPAIGNS_FILE {CAMPAIGNS_FILE} does not exist!")
     except Exception as e:
         logger.error(f"Failed to update campaign progress in storage: {e}")
 
