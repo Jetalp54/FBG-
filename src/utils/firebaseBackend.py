@@ -1693,15 +1693,36 @@ async def list_projects(request: Request, search: Optional[str] = None, limit: O
     if any('ownerId' not in project for project in projects_data):
         save_projects_to_file()
     
+    # Sort projects by creation time (assuming order in file is roughly creation order) or name
+    # project_list.sort(key=lambda x: x.get('name', '').lower())
+    
     total = len(project_list)
+    
+    # Apply pagination only if limit/offset are provided
     if limit is not None and offset is not None:
         try:
-            l = max(1, min(int(limit), 500))
+            l = max(1, min(int(limit), 1000)) # Increased max limit
             o = max(0, int(offset))
             project_list = project_list[o:o+l]
         except Exception:
             pass
+    elif limit is not None:
+        try:
+             l = max(1, min(int(limit), 1000))
+             project_list = project_list[:l]
+        except Exception:
+            pass
+            
     return {"projects": project_list, "total": total}
+
+@app.post("/projects/refresh")
+async def refresh_projects_list(request: Request):
+    """Manually reload projects from file without restart"""
+    try:
+        load_projects_from_file()
+        return {"success": True, "message": f"Projects reloaded. Total: {len(projects)}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/projects/{project_id}/users")
 async def load_users(project_id: str, limit: Optional[int] = 1000, page_token: Optional[str] = None, search: Optional[str] = None):
