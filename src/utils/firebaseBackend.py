@@ -1142,12 +1142,17 @@ class CampaignCreate(BaseModel):
     turbo_config: Optional[Dict[str, Any]] = None
     throttle_config: Optional[Dict[str, Any]] = None
     schedule_config: Optional[Dict[str, Any]] = None
+    # NEW: Per-project sending controls
+    sending_limit: Optional[int] = None
+    sending_offset: Optional[int] = 0
 
 class CampaignUpdate(BaseModel):
     name: Optional[str] = None
     batchSize: Optional[int] = None
     workers: Optional[int] = None
     template: Optional[str] = None
+    sending_limit: Optional[int] = None
+    sending_offset: Optional[int] = None
     sending_mode: Optional[str] = None
     turbo_config: Optional[Dict[str, Any]] = None
     throttle_config: Optional[Dict[str, Any]] = None
@@ -2557,7 +2562,7 @@ async def get_all_daily_counts():
     """Get all daily counts"""
     return {"daily_counts": daily_counts}
 
-def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_name=None):
+def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_name=None, limit=None, offset=0):
     import concurrent.futures
     import logging
     
@@ -2566,7 +2571,18 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
     campaign_id = str(campaign_id) if campaign_id is not None else ''
     user_ids = [str(uid) for uid in user_ids if uid is not None]
     
-    logger.info(f"[{project_id}] Starting fire_all_emails: {len(user_ids)} users, workers={workers}, lightning={lightning}")
+    # Apply Offset and Limit to the user_ids list if provided
+    original_count = len(user_ids)
+    if offset and offset > 0:
+        if offset < len(user_ids):
+            user_ids = user_ids[offset:]
+        else:
+            user_ids = []
+            
+    if limit and limit > 0:
+        user_ids = user_ids[:limit]
+        
+    logger.info(f"[{project_id}] Starting fire_all_emails: {len(user_ids)} users (Original: {original_count}, Offset: {offset}, Limit: {limit}), workers={workers}, lightning={lightning}")
     
     # Use existing Firebase apps instead of re-initializing
     if project_id not in firebase_apps:
@@ -2612,30 +2628,39 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
     
     # Chunk user_ids into batches of 100 IF specific users provided
     if user_ids:
-        chunks = [user_ids[i:i + 100] for i in range(0, len(user_ids), 100)]
+        # Apply Limit and Offset if provided via kwargs (or if passed in user_ids list, but here we expect full list or subset)
+        # However, fire_all_emails signature doesn't take limit/offset directly, it takes user_ids.
+        # The calling function should probably slice it, OR we add args.
+        # Let's add them to the function signature if needed, or rely on caller? 
+        # Actually, let's update signature to accept keyword args or just handle it here if passed in some other way?
+        # WAIT: The caller `process_project_turbo` or `send_campaign` extracts these from the campaign config.
+        # So we should update `fire_all_emails` signature.
+        pass
+        
+    chunks = [user_ids[i:i + 100] for i in range(0, len(user_ids), 100)]
     
-        def fetch_batch_emails(batch_uids):
-            found = {}
-            try:
-                # Correctly use UidIdentifier for batch lookup
-                identifiers = [auth.UidIdentifier(uid) for uid in batch_uids]
-                result = auth.get_users(identifiers, app=firebase_app)
-                for user in result.users:
-                    if user.email:
-                        found[user.uid] = user.email
-                if len(found) < len(batch_uids):
-                    logger.debug(f"[{project_id}] Batch lookup found {len(found)}/{len(batch_uids)} users")
-            except Exception as e:
-                logger.error(f"[{project_id}] Batch user lookup failed: {e}")
-                # Fallback: Try fetching individually if batch fails
-                for uid in batch_uids:
-                    try:
-                        u = auth.get_user(uid, app=firebase_app)
-                        if u.email:
-                            found[u.uid] = u.email
-                    except:
-                        pass
-            return found
+    def fetch_batch_emails(batch_uids):
+        found = {}
+        try:
+            # Correctly use UidIdentifier for batch lookup
+            identifiers = [auth.UidIdentifier(uid) for uid in batch_uids]
+            result = auth.get_users(identifiers, app=firebase_app)
+            for user in result.users:
+                if user.email:
+                    found[user.uid] = user.email
+            if len(found) < len(batch_uids):
+                logger.debug(f"[{project_id}] Batch lookup found {len(found)}/{len(batch_uids)} users")
+        except Exception as e:
+            logger.error(f"[{project_id}] Batch user lookup failed: {e}")
+            # Fallback: Try fetching individually if batch fails
+            for uid in batch_uids:
+                try:
+                    u = auth.get_user(uid, app=firebase_app)
+                    if u.email:
+                        found[u.uid] = u.email
+                except:
+                    pass
+        return found
 
         # Parallelize the lookup itself
         with concurrent.futures.ThreadPoolExecutor(max_workers=20) as lookup_executor:
@@ -2788,7 +2813,16 @@ async def send_campaign(request: Request):
                     logger.info(f"⚡ [TURBO] Thread started for project {p_id}")
                     
                     # Force 200 workers for maximum throughput
-                    successful = fire_all_emails(p_id, u_ids, c_id, 200, True) 
+                    successful = fire_all_emails(
+                        p_id, 
+                        u_ids, 
+                        c_id, 
+                        200, 
+                        True, 
+                        None, 
+                        request_data.get('sending_limit'), 
+                        request_data.get('sending_offset', 0)
+                    ) 
                     
                     result_queue.put({
                         'project_id': p_id,

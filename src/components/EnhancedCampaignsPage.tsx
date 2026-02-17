@@ -590,6 +590,92 @@ export const EnhancedCampaignsPage = () => {
                   <div className="text-sm text-gray-400">
                     Showing {((currentPage - 1) * campaignsPerPage) + 1} to {Math.min(currentPage * campaignsPerPage, totalCampaigns)} of {totalCampaigns} campaigns
                   </div>
+                  <div className="space-y-4 pt-4 border-t border-gray-700">
+                    <h3 className="text-lg font-semibold text-white">Sending Configuration</h3>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-gray-300">Sending Mode</label>
+                        <Select
+                          value={sendingMode.mode}
+                          onValueChange={(value: any) => setSendingMode(prev => ({ ...prev, mode: value }))}
+                        >
+                          <SelectTrigger className="bg-gray-700 border-gray-600 text-white">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="bg-gray-800 border-gray-700 text-white">
+                            <SelectItem value="turbo">Turbo (Max Speed)</SelectItem>
+                            <SelectItem value="throttled">Throttled (Safe)</SelectItem>
+                            <SelectItem value="scheduled">Scheduled</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {sendingMode.mode === 'throttled' && (
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium text-gray-300">Emails per Second</label>
+                          <Input
+                            type="number"
+                            min="1"
+                            value={sendingMode.throttle_config?.emails_per_ms ? Math.round(sendingMode.throttle_config.emails_per_ms * 1000) : 10}
+                            onChange={(e) => setSendingMode(prev => ({
+                              ...prev,
+                              throttle_config: { ...prev.throttle_config, emails_per_ms: parseInt(e.target.value) / 1000 }
+                            }))}
+                            className="bg-gray-700 border-gray-600 text-white"
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* NEW: Per-Project Sending Limits */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-gray-300">Send Limit (Per Project)</label>
+                        <Input
+                          type="number"
+                          placeholder="Unlimited"
+                          min="1"
+                          value={sendingMode.sending_limit || ''}
+                          onChange={(e) => setSendingMode(prev => ({
+                            ...prev,
+                            sending_limit: e.target.value ? parseInt(e.target.value) : undefined
+                          }))}
+                          className="bg-gray-700 border-gray-600 text-white"
+                        />
+                        <p className="text-xs text-gray-500">Max emails to send per project (leave empty for all)</p>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-gray-300">Start Offset</label>
+                        <Input
+                          type="number"
+                          placeholder="0"
+                          min="0"
+                          value={sendingMode.sending_offset || 0}
+                          onChange={(e) => setSendingMode(prev => ({
+                            ...prev,
+                            sending_offset: parseInt(e.target.value) || 0
+                          }))}
+                          className="bg-gray-700 border-gray-600 text-white"
+                        />
+                        <p className="text-xs text-gray-500">Skip the first X users (useful for resuming)</p>
+                      </div>
+                    </div>
+
+                    {sendingMode.mode === 'scheduled' && (
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-gray-300">Schedule Time (ISO)</label>
+                        <Input
+                          type="datetime-local"
+                          onChange={(e) => setSendingMode(prev => ({
+                            ...prev,
+                            schedule_config: { ...prev.schedule_config, scheduled_time: e.target.value }
+                          }))}
+                          className="bg-gray-700 border-gray-600 text-white"
+                        />
+                      </div>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2">
                     <Button
                       size="sm"

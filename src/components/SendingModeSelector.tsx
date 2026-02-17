@@ -21,6 +21,8 @@ export interface SendingModeConfig {
         timezone: string;
         execution_mode: 'turbo' | 'throttled';
     };
+    sending_limit?: number;
+    sending_offset?: number;
 }
 
 interface SendingModeSelectorProps {
@@ -110,8 +112,8 @@ export const SendingModeSelector = ({ value, onChange }: SendingModeSelectorProp
                 {/* TURBO MODE */}
                 <Card
                     className={`cursor-pointer transition-all ${selectedMode === 'turbo'
-                            ? 'border-yellow-500 bg-gradient-to-br from-yellow-900/30 to-orange-900/30'
-                            : 'border-gray-600 bg-gray-800 hover:border-yellow-600'
+                        ? 'border-yellow-500 bg-gradient-to-br from-yellow-900/30 to-orange-900/30'
+                        : 'border-gray-600 bg-gray-800 hover:border-yellow-600'
                         }`}
                     onClick={() => handleModeChange('turbo')}
                 >
@@ -142,8 +144,8 @@ export const SendingModeSelector = ({ value, onChange }: SendingModeSelectorProp
                 {/* THROTTLED MODE */}
                 <Card
                     className={`cursor-pointer transition-all ${selectedMode === 'throttled'
-                            ? 'border-blue-500 bg-gradient-to-br from-blue-900/30 to-cyan-900/30'
-                            : 'border-gray-600 bg-gray-800 hover:border-blue-600'
+                        ? 'border-blue-500 bg-gradient-to-br from-blue-900/30 to-cyan-900/30'
+                        : 'border-gray-600 bg-gray-800 hover:border-blue-600'
                         }`}
                     onClick={() => handleModeChange('throttled')}
                 >
@@ -174,8 +176,8 @@ export const SendingModeSelector = ({ value, onChange }: SendingModeSelectorProp
                 {/* SCHEDULED MODE */}
                 <Card
                     className={`cursor-pointer transition-all ${selectedMode === 'scheduled'
-                            ? 'border-purple-500 bg-gradient-to-br from-purple-900/30 to-pink-900/30'
-                            : 'border-gray-600 bg-gray-800 hover:border-purple-600'
+                        ? 'border-purple-500 bg-gradient-to-br from-purple-900/30 to-pink-900/30'
+                        : 'border-gray-600 bg-gray-800 hover:border-purple-600'
                         }`}
                     onClick={() => handleModeChange('scheduled')}
                 >
