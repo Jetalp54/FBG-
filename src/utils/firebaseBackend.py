@@ -43,7 +43,14 @@ from urllib.parse import urlparse
 
 # Database connection pool
 import threading
+# Database connection pool
+import threading
 db_connection_lock = threading.Lock()
+
+# Global Concurrency Semaphore to prevent system overload
+# Even with Buffered I/O, we must limit total active network requests across all projects.
+GLOBAL_CONCURRENCY_LIMIT = 500
+global_semaphore = threading.Semaphore(GLOBAL_CONCURRENCY_LIMIT)
 
 def get_db_connection():
     """Get database connection with proper error handling"""
@@ -1046,14 +1053,42 @@ import time
 import os
 results_lock = threading.RLock()
 
-def save_campaign_results_to_file():
-    """Save campaign results to file with thread safety"""
+# Buffered Saver Implementation
+save_buffer_lock = threading.Lock()
+last_save_time = 0
+SAVE_INTERVAL = 5 # Seconds
+
+def save_campaign_results_to_file(force=False):
+    """Save campaign results to file with buffering"""
+    global last_save_time
+    
+    # If not forced and not enough time passed, skip disk write
+    if not force and (time.time() - last_save_time < SAVE_INTERVAL):
+        return
+
+    # Use RLock for thread safety during write
     with results_lock:
         try:
-            with open(CAMPAIGN_RESULTS_FILE, 'w') as f:
+            # Create a temp file first to prevent corruption if write fails mid-way
+            temp_file = f"{CAMPAIGN_RESULTS_FILE}.tmp"
+            with open(temp_file, 'w') as f:
                 json.dump(campaign_results, f, indent=2)
+            
+            # Atomic rename (replace)
+            os.replace(temp_file, CAMPAIGN_RESULTS_FILE)
+            last_save_time = time.time()
         except Exception as e:
             logger.error(f"Failed to save campaign results: {e}")
+
+# Background Auto-Saver
+def start_auto_saver():
+    while True:
+        time.sleep(SAVE_INTERVAL)
+        save_campaign_results_to_file(force=True)
+
+# Start auto-saver in a daemon thread
+saver_thread = threading.Thread(target=start_auto_saver, daemon=True)
+saver_thread.start()
 
 def load_campaign_results_from_file():
     """Load campaign results from file with thread safety"""
@@ -1080,6 +1115,56 @@ def load_campaign_results_from_file():
         except Exception as e:
             logger.error(f"Failed to load campaign results: {e}")
             campaign_results = {}
+
+# NEW: Redis Stats Sync for Enterprise Mode
+def monitor_redis_progress():
+    """Background thread to sync stats from Redis to local memory for UI updates"""
+    try:
+        import redis
+        # Use localhost for now, user can config via env
+        r = redis.Redis(host=os.getenv('REDIS_HOST', 'localhost'), port=int(os.getenv('REDIS_PORT', 6379)), db=0)
+    except Exception as e:
+        logger.warning(f"Redis not available for monitoring: {e}")
+        return
+
+    logger.info("✅ Started Redis Stats Monitor")
+    
+    while True:
+        time.sleep(2) # Sync every 2 seconds
+        try:
+            # Iterate over active campaigns in memory
+            # We use a copy of keys to avoid modification errors
+            current_campaigns = list(campaign_results.keys())
+            
+            for c_id in current_campaigns:
+                # Check if this campaign has Redis stats
+                key = f"campaign:{c_id}:stats"
+                if r.exists(key):
+                    stats = r.hgetall(key)
+                    if stats:
+                        with results_lock:
+                            if c_id not in campaign_results:
+                                campaign_results[c_id] = {}
+                            
+                            # Merge Redis stats (Source of Truth for Turbo)
+                            campaign_results[c_id]['successful'] = int(stats.get(b'successful', 0))
+                            campaign_results[c_id]['failed'] = int(stats.get(b'failed', 0))
+                            campaign_results[c_id]['processed'] = int(stats.get(b'processed', 0))
+                            
+                            # Calculate status
+                            total = campaign_results[c_id].get('total', 0)
+                            processed = campaign_results[c_id]['processed']
+                            if total > 0 and processed >= total:
+                                campaign_results[c_id]['status'] = 'completed'
+                            else:
+                                campaign_results[c_id]['status'] = 'running'
+
+        except Exception as e:
+            logger.error(f"Redis sync error: {e}")
+            time.sleep(5)
+
+# Start Monitor in Background
+threading.Thread(target=monitor_redis_progress, daemon=True).start()
 
 # NEW: Data Lists Storage Functions
 def save_data_lists_to_file():
@@ -2735,19 +2820,23 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
     # calling it again here would RESET progress to 0, which is bad.
     # create_campaign_result(campaign_id, project_id, len(user_emails))
     
+
+
     def fire_email_task(item):
         uid, email = item
-        try:
-            # logger.info(f"[{project_id}] Sending to: {email}") # Reduce logging for speed?
-            pyrebase_auth.send_password_reset_email(str(email))
-            update_campaign_result(campaign_id, project_id, True, user_id=uid, email=email)
-            return True
-        except Exception as e:
-            err_str = str(e)
-            # Don't log full stack trace for every failure to keep logs clean
-            logger.error(f"[ERROR][{project_id}] Failed {email}: {err_str[:100]}") 
-            update_campaign_result(campaign_id, project_id, False, user_id=uid, email=email, error=err_str)
-            return False
+        # Acquire global semaphore to ensure we don't exceed server limits
+        with global_semaphore:
+            try:
+                # logger.info(f"[{project_id}] Sending to: {email}") # Reduce logging for speed?
+                pyrebase_auth.send_password_reset_email(str(email))
+                update_campaign_result(campaign_id, project_id, True, user_id=uid, email=email)
+                return True
+            except Exception as e:
+                err_str = str(e)
+                # Don't log full stack trace for every failure to keep logs clean
+                logger.error(f"[ERROR][{project_id}] Failed {email}: {err_str[:100]}") 
+                update_campaign_result(campaign_id, project_id, False, user_id=uid, email=email, error=err_str)
+                return False
     
     # Process emails in batches (or rather, just concurrently)
     successful_sends = 0
@@ -2830,6 +2919,62 @@ async def send_campaign(request: Request):
         # MODE 1: TURBO - Maximum Speed
         # ==================================================================
         if sending_mode == 'turbo':
+            logger.info(f"🚀 [TURBO MODE] Enterprise Queue Dispatch (Celery)")
+            
+            # --- ENTERPRISE QUEUE LOGIC ---
+            try:
+                # Dynamic Import
+                try:
+                    from src.utils.celery_tasks import process_campaign_batch
+                except ImportError:
+                    try:
+                        from celery_tasks import process_campaign_batch
+                    except ImportError as e:
+                        logger.error(f"Could not import Celery tasks: {e}")
+                        raise Exception("Celery/Redis infrastructure not found. Please install requirements-enterprise.txt")
+
+                total_users = 0
+                total_batches = 0
+                
+                # Initialize Campaign Status (UI shows 'Running')
+                create_campaign_result(campaign_id, project_id, 0)
+                
+                # Iterate and Enqueue
+                for proj in projects:
+                    p_id = str(proj.get('projectId', ''))
+                    u_ids = proj.get('userIds', [])
+                    
+                    if not u_ids:
+                        continue
+                        
+                    # Configurable Batch Size
+                    batch_size = request_data.get('batchSize', 100)
+                    batches = [u_ids[i:i + batch_size] for i in range(0, len(u_ids), batch_size)]
+                    
+                    logger.info(f"[{p_id}] Enqueueing {len(batches)} batches for {len(u_ids)} users")
+                    
+                    for batch in batches:
+                        process_campaign_batch.delay(campaign_id, p_id, batch)
+                        total_batches += 1
+                        total_users += len(batch)
+
+                return {
+                    "success": True, 
+                    "message": f"Campaign Started. {total_users} emails queued on Enterprise Hub.", 
+                    "campaignId": campaign_id,
+                    "mode": "enterprise_turbo"
+                }
+
+            except Exception as e:
+                logger.error(f"❌ Enterprise Dispatch Error: {e}")
+                return {
+                    "success": False, 
+                    "error": f"Enterprise Dispatch Failed: {str(e)}. Check Redis."
+                }
+            
+            # --- LEGACY CODE BELOW IS UNREACHABLE ---
+            pass
+            
             logger.info(f"🚀 [TURBO MODE] Firing all resources")
             
             total_successful = 0

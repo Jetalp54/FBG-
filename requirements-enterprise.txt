@@ -1,0 +1,5 @@
+celery[redis]>=5.3.0
+redis>=4.5.0
+gevent>=22.10.2
+psycopg2-binary>=2.9.0
+python-dotenv>=1.0.0
