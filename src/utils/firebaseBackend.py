@@ -2596,15 +2596,13 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
                 result = future.result()
                 if result:
                     successful_sends += 1
-                    # CRITICAL: Update campaign progress for successful send
-                    update_campaign_result(campaign_id, project_id, success=True, user_id=uid, email=email)
+                    # Progress is already updated inside fire_email_task!
                 else:
-                    # Update for failed send
-                    update_campaign_result(campaign_id, project_id, success=False, user_id=uid, email=email, error="Send returned False")
+                    # Failure is already updated inside fire_email_task!
+                    pass
             except Exception as e:
                 logger.error(f"[ERROR][{project_id}] Exception for {email}: {e}")
-                # Update for exception
-                update_campaign_result(campaign_id, project_id, success=False, user_id=uid, email=email, error=str(e))
+                # Failure is already updated inside fire_email_task!
     
     logger.info(f"[{project_id}] Finished sending {len(email_list)} emails with {max_workers} workers. Successful: {successful_sends}")
     
