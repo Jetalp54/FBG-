@@ -6498,6 +6498,65 @@ async def get_campaign_logs(campaign_id: str, limit: int = 50, offset: int = 0, 
 
 
 
+# Startup: Hydrate Active Campaigns from DB
+def load_active_campaigns_from_db():
+    """Recover running state from DB on restart"""
+    try:
+        conn = get_db_connection()
+        if not conn: return
+        cursor = conn.cursor()
+        
+        # Fetch pending or running campaigns
+        cursor.execute("""
+            SELECT id, campaign_uuid, name, project_ids, batch_size, workers, template, 
+                   status, processed, successful, failed, created_at, owner_id, 
+                   sending_mode, turbo_config, throttle_config, schedule_config
+            FROM campaigns 
+            WHERE status IN ('pending', 'running')
+        """)
+        
+        rows = cursor.fetchall()
+        if not rows:
+            logger.info("No active campaigns found in DB to recover.")
+            conn.close()
+            return
+
+        cols = [desc[0] for desc in cursor.description]
+        
+        count = 0
+        for row in rows:
+            c = dict(zip(cols, row))
+            c_uuid = c.get('campaign_uuid') or str(c['id'])
+            
+            # Reconstruct Object
+            campaign_data = {
+                "id": c_uuid,
+                "db_id": c['id'],
+                "name": c['name'],
+                "projectIds": c['project_ids'] if isinstance(c['project_ids'], list) else json.loads(c['project_ids'] if c['project_ids'] else '[]'),
+                "batchSize": c['batch_size'],
+                "workers": c['workers'],
+                "template": c['template'],
+                "status": c['status'],
+                "createdAt": c['created_at'].isoformat() if c['created_at'] else "",
+                "processed": c['processed'],
+                "successful": c['successful'],
+                "failed": c['failed'],
+                "ownerId": str(c['owner_id']), 
+                "sending_mode": c.get('sending_mode', 'turbo'),
+                "turbo_config": c['turbo_config'] if isinstance(c['turbo_config'], dict) else json.loads(c['turbo_config'] if c['turbo_config'] else '{}'),
+                "projectStats": {}, 
+                "errors": []
+            }
+            
+            active_campaigns[c_uuid] = campaign_data
+            count += 1
+            
+        logger.info(f"🔄 Recovered {count} active campaigns from Database.")
+        conn.close()
+    except Exception as e:
+        logger.error(f"Failed to hydrate active campaigns: {e}")
+
 # Startup: Recover Active State from Redis
 def recover_state_from_redis():
     """

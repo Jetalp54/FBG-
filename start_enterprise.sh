@@ -1,27 +1,45 @@
 #!/bin/bash
 echo "🚀 Starting Enterprise Firebase Manager..."
 
-# 1. Cleanup Old Processes
+# 1. Cleanup Old Processes (Force Kill)
 echo "🧹 Cleaning up old processes..."
-pkill -f "celery worker" || true
-pkill -f "firebaseBackend.py" || true
-sleep 2
+sudo pkill -9 -f "celery worker" || true
+sudo pkill -9 -f "firebaseBackend.py" || true
 
-# 2. Check Redis & PostgreSQL (The "Next Level" Infrastructure)
-if ! command -v redis-server &> /dev/null; then
-    echo "❌ Redis is not installed. Installing..."
-    sudo apt update && sudo apt install -y redis-server python3-venv python3-pip
+# Kill any process holding port 8000
+if command -v fuser &> /dev/null; then
+    sudo fuser -k 8000/tcp || true
 fi
 
-if ! command -v psql &> /dev/null; then
-    echo "❌ PostgreSQL is not installed. Installing Enterprise Database..."
-    sudo apt install -y postgresql postgresql-contrib libpq-dev
+# Wait for port to be free
+echo "⏳ Waiting for port 8000 to clear..."
+while sudo lsof -i:8000 -t >/dev/null 2>&1; do
+    sleep 1
+    echo "."
+done
+echo "✅ Port 8000 is free."
+
+# 2. Check Dependencies (Redis, Postgres, Utils)
+echo "🔍 Checking System Dependencies..."
+MISSING_DEPS=()
+
+if ! command -v redis-server &> /dev/null; then MISSING_DEPS+=("redis-server"); fi
+if ! command -v psql &> /dev/null; then MISSING_DEPS+=("postgresql" "postgresql-contrib" "libpq-dev"); fi
+if ! command -v fuser &> /dev/null; then MISSING_DEPS+=("psmisc"); fi  # For fuser
+if ! command -v lsof &> /dev/null; then MISSING_DEPS+=("lsof"); fi    # For checking ports
+
+if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
+    echo "📦 Installing Missing Dependencies: ${MISSING_DEPS[*]}"
+    sudo apt update
+    sudo apt install -y "${MISSING_DEPS[@]}" python3-venv python3-pip
     
-    # Setup DB User and Database
-    echo "🐘 Configuring PostgreSQL..."
-    sudo -u postgres psql -c "CREATE USER firebase_user WITH PASSWORD 'firebase_password';" || true
-    sudo -u postgres psql -c "CREATE DATABASE firebase_db OWNER firebase_user;" || true
-    sudo -u postgres psql -c "ALTER USER firebase_user CREATEDB;" || true
+    # Configure Postgres if it was just installed
+    if [[ " ${MISSING_DEPS[*]} " =~ "postgresql" ]]; then
+        echo "🐘 Configuring PostgreSQL User..."
+        sudo -u postgres psql -c "CREATE USER firebase_user WITH PASSWORD 'firebase_password';" || true
+        sudo -u postgres psql -c "CREATE DATABASE firebase_db OWNER firebase_user;" || true
+        sudo -u postgres psql -c "ALTER USER firebase_user CREATEDB;" || true
+    fi
 fi
 
 # Export DB Connection String for App
