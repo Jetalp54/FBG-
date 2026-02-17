@@ -2504,6 +2504,8 @@ async def start_campaign(campaign_id: str):
             'turbo_config': campaign.get('turbo_config'),
             'throttle_config': campaign.get('throttle_config'),
             'schedule_config': campaign.get('schedule_config'),
+            'sending_limit': campaign.get('sending_limit'),
+            'sending_offset': campaign.get('sending_offset', 0),
             'campaignId': campaign_id
         }
         logger.info(f"[{campaign_id}] Start payload prepared. Mode: {payload['sending_mode']}. Projects: {len(projects_payload)}")
