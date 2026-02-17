@@ -2244,6 +2244,18 @@ async def list_campaigns(request: Request, page: int = 1, limit: int = 10):
         # Load campaigns from file to get ownership info
         campaigns_data = load_campaigns_from_file()
         
+        # DEBUG LOGGING for Campaign Progress Issue
+        if campaigns_data:
+             for c in campaigns_data:
+                 if 'processed' in c and c['processed'] > 0:
+                     logger.info(f"DEBUG: Found campaign in file with progress > 0: {c['id']} - {c['processed']}")
+                 
+             if is_admin:
+                 current_mem_campaigns = list(active_campaigns.values())
+                 for c in current_mem_campaigns:
+                     if 'processed' in c and c['processed'] > 0:
+                         logger.info(f"DEBUG: Found campaign in memory with progress > 0: {c['id']} - {c['processed']}")
+        
         # Filter campaigns based on user access
         if is_admin:
             # Admin sees all campaigns
