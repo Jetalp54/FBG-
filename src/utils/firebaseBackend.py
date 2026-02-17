@@ -3295,6 +3295,7 @@ def update_campaign_result(campaign_id: str, project_id: str, success: bool, use
         else:
             # File mode: Update campaign in CAMPAIGNS_FILE
             logger.info(f"Attempting to update campaign {campaign_id} in {CAMPAIGNS_FILE}")
+            logger.info(f"campaign_results[{key}] = {campaign_results.get(key, 'KEY NOT FOUND!')}")
             logger.info(f"Progress data: processed={processed}, successful={campaign_results[key]['successful']}, failed={campaign_results[key]['failed']}")
             if os.path.exists(CAMPAIGNS_FILE):
                 with open(CAMPAIGNS_FILE, 'r') as f:
