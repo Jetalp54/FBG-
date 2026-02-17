@@ -2583,15 +2583,6 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
         'total_emails': len(email_list)
     })
     
-    # WebSocket notification
-    asyncio.create_task(notify_ws('send_campaign', {
-        'campaign_id': campaign_id, 
-        'project_id': project_id,
-        'workers': max_workers, 
-        'lightning': lightning,
-        'emails_sent': successful_sends
-    }))
-    
     return successful_sends
 
 @app.post("/campaigns/send")
