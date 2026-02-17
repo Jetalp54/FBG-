@@ -2771,77 +2771,94 @@ async def send_campaign(request: Request):
             total_failed = 0
             project_results = []
             
-            # Process all projects in parallel
-            import concurrent.futures
-            loop = asyncio.get_event_loop()
+            # Process all projects in parallel using dedicated threads
+            # This bypasses the default thread pool limits (max_workers=CPU*5)
+            import threading
+            import queue
             
-            # Create a dedicated executor with enough workers for ALL projects
-            # This bypasses the default pool limit (usually CPU*5)
-            # giving every project its own thread immediately.
-            project_concurrency = max(len(projects) + 5, 20)
-            logger.info(f"🚀 [TURBO] initializing executor with {project_concurrency} workers for {len(projects)} projects")
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=project_concurrency)
+            result_queue = queue.Queue()
+            threads = []
             
-            async def process_project_turbo(proj):
-                proj_id = str(proj.get('projectId', ''))
-                specific_users = proj.get('userIds', [])
-                
-                # Use the optimized fire_all_emails function
+            def thread_wrapper(proj, c_id):
                 try:
-                    logger.info(f"⚡ [TURBO] Launching optimized sender for project {proj_id}")
+                    p_id = str(proj.get('projectId', ''))
+                    u_ids = proj.get('userIds', [])
                     
-                    # Pass 'lightning=True' to enable maximum worker count (200)
-                    successful = await loop.run_in_executor(
-                        executor, 
-                        fire_all_emails, 
-                        proj_id, 
-                        specific_users, 
-                        campaign_id, 
-                        200,   # Force 200 workers per project
-                        True   # Lightning mode = True
-                    )
+                    # Run the blocking fire_all_emails function
+                    logger.info(f"⚡ [TURBO] Thread started for project {p_id}")
                     
-                    # Return stats (approximate, since fire_all_emails handles its own logging/tracking)
-                    return {
-                        'project_id': proj_id,
+                    # Force 200 workers for maximum throughput
+                    successful = fire_all_emails(p_id, u_ids, c_id, 200, True) 
+                    
+                    result_queue.put({
+                        'project_id': p_id,
                         'successful': successful,
-                        'failed': 0, # simplified for summary
-                        'total': successful # simplified
-                    }
+                        'status': 'completed'
+                    })
                 except Exception as e:
-                    logger.error(f"❌ [TURBO] Project {proj_id} failed: {e}")
-                    return {
-                        'project_id': proj_id, 
-                        'successful': 0, 
-                        'failed': 0, 
-                        'total': 0, 
-                        'error': str(e)
-                    }
+                    logger.error(f"Thread failed for {proj.get('projectId')}: {e}")
+                    result_queue.put({
+                        'project_id': proj.get('projectId'),
+                        'error': str(e),
+                        'status': 'failed'
+                    })
+
+            # Launch a thread for EVERY project
+            for project in projects:
+                t = threading.Thread(target=thread_wrapper, args=(project, campaign_id))
+                t.start()
+                threads.append(t)
             
-            # Execute all projects in parallel using asyncio.gather
-            # This ensures that ALL projects start at the exact same time
-            logger.info(f"🚀 [TURBO] Launching {len(projects)} projects in parallel...")
-            tasks = [process_project_turbo(proj) for proj in projects]
-            project_results = await asyncio.gather(*tasks)
+            logger.info(f"🚀 Launched {len(threads)} dedicated threads for Turbo Mode")
             
-            total_successful = sum(r['successful'] for r in project_results)
-            total_failed = sum(r['failed'] for r in project_results)
+            # Non-blocking wait: we can't await threads in asyncio, 
+            # so we use a background task to monitor them if we want to update status later.
+            # But for the immediate response, we just return "Started".
+            # To define `final_status` accurately, we'll wait for them here since the user expects
+            # a response regarding the *launch* (which we did).
             
-            response = {
+            # Let's wait for threads to finish for the REPORT, but maybe we should background it?
+            # The original code awaited `run_in_executor`. 
+            # Let's start a background task to wait for threads and update status.
+            
+            def wait_for_completion():
+                logger.info(f"Monitoring {len(threads)} Turbo threads...")
+                for t in threads:
+                    t.join()
+                
+                logger.info("All Turbo threads completed.")
+                
+                # Aggregate results
+                while not result_queue.empty():
+                    res = result_queue.get()
+                    project_results.append(res)
+                    if res.get('status') == 'completed':
+                        nonlocal total_successful
+                        total_successful += res.get('successful', 0)
+                    else:
+                        nonlocal total_failed
+                        total_failed += 1
+                
+                # Update Campaign Status in Background
+                if campaign_id in active_campaigns:
+                    active_campaigns[campaign_id]['status'] = 'completed'
+                    active_campaigns[campaign_id]['completedAt'] = datetime.now().isoformat()
+                    active_campaigns[campaign_id]['totalSent'] = total_successful # field might vary
+                    save_campaigns_to_file()
+                
+                logger.info(f"Campaign {campaign_id} finished. Total Successful: {total_successful}")
+
+            # Run monitoring in a separate thread so we don't block the API response
+            monitor_thread = threading.Thread(target=wait_for_completion)
+            monitor_thread.start()
+
+            return {
                 "success": True,
                 "mode": "turbo",
-                "summary": {
-                    "successful": total_successful,
-                    "failed": total_failed,
-                    "total": total_successful + total_failed
-                },
-                "project_results": project_results,
-                "campaign_id": campaign_id,
-                "message": f"Turbo mode completed: {total_successful} emails sent across {len(projects)} projects"
+                "message": f"Launched {len(projects)} projects in parallel (Turbo Mode)",
+                "campaignId": campaign_id,
+                "project_count": len(projects)
             }
-            
-            logger.info(f"✅ [TURBO] Campaign completed: {response}")
-            return response
         
         # ==================================================================
         # MODE 2: THROTTLED - Rate Limited (Millisecond-based)
