@@ -2579,13 +2579,20 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
         # Collect results as they complete
         for future in concurrent.futures.as_completed(future_to_item):
             item = future_to_item[future]
+            uid, email = item
             try:
                 result = future.result()
                 if result:
                     successful_sends += 1
+                    # CRITICAL: Update campaign progress for successful send
+                    update_campaign_result(campaign_id, project_id, success=True, user_id=uid, email=email)
+                else:
+                    # Update for failed send
+                    update_campaign_result(campaign_id, project_id, success=False, user_id=uid, email=email, error="Send returned False")
             except Exception as e:
-                uid, email = item
                 logger.error(f"[ERROR][{project_id}] Exception for {email}: {e}")
+                # Update for exception
+                update_campaign_result(campaign_id, project_id, success=False, user_id=uid, email=email, error=str(e))
     
     logger.info(f"[{project_id}] Finished sending {len(email_list)} emails with {max_workers} workers. Successful: {successful_sends}")
     
