@@ -121,7 +121,7 @@ class APIClient {
   }
 
   // Projects
-  async getProjects(limit = 1000, offset = 0) {
+  async getProjects(limit = 30, offset = 0) {
     return this.makeRequest(`/projects?limit=${limit}&offset=${offset}`);
   }
 

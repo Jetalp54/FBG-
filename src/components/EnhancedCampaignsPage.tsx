@@ -885,6 +885,43 @@ export const EnhancedCampaignsPage = () => {
               </div>
             )}
 
+
+            {/* Sending Limits (New Feature) */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="sendLimit" className="text-gray-300">Send Limit (Per Project)</Label>
+                <Input
+                  id="sendLimit"
+                  type="number"
+                  placeholder="Unlimited"
+                  min="1"
+                  value={sendingMode?.sending_limit || ''}
+                  onChange={(e) => setSendingMode(prev => ({
+                    ...prev,
+                    sending_limit: e.target.value ? parseInt(e.target.value) : undefined
+                  }))}
+                  className="bg-gray-700 border-gray-600 text-white"
+                />
+                <p className="text-xs text-gray-500">Max emails to send per project (leave empty for all)</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="startOffset" className="text-gray-300">Start Offset</Label>
+                <Input
+                  id="startOffset"
+                  type="number"
+                  placeholder="0"
+                  min="0"
+                  value={sendingMode?.sending_offset || 0}
+                  onChange={(e) => setSendingMode(prev => ({
+                    ...prev,
+                    sending_offset: parseInt(e.target.value) || 0
+                  }))}
+                  className="bg-gray-700 border-gray-600 text-white"
+                />
+                <p className="text-xs text-gray-500">Skip the first X users (useful for resuming)</p>
+              </div>
+            </div>
+
             {/* Sending Mode Selector - Enterprise Feature */}
             <SendingModeSelector value={sendingMode} onChange={setSendingMode} />
 
