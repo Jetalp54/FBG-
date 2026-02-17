@@ -962,7 +962,7 @@ def load_projects_from_file():
                         projects[project_id] = project
                 logger.info(f"Initialized global projects with {len(projects)} projects")
                 
-                # --- Auto-reinitialize all projects into firebase_apps on startup ---
+                # --- Auto-reinitialize all projects into firebase_apps AND pyrebase_apps on startup ---
                 for project_id, project in projects.items():
                     try:
                         from firebase_admin import credentials, initialize_app
@@ -970,6 +970,17 @@ def load_projects_from_file():
                         firebase_app = initialize_app(cred, name=project_id)
                         firebase_apps[project_id] = firebase_app
                         logger.info(f"Auto-initialized project {project_id} into firebase_apps on startup.")
+                        
+                        # CRITICAL FIX: Also initialize Pyrebase for email sending
+                        pyrebase_config = {
+                            "apiKey": project.get('apiKey', ''),
+                            "authDomain": f"{project_id}.firebaseapp.com",
+                            "databaseURL": f"https://{project_id}.firebaseio.com",
+                            "storageBucket": f"{project_id}.appspot.com"
+                        }
+                        pyrebase_app = pyrebase.initialize_app(pyrebase_config)
+                        pyrebase_apps[project_id] = pyrebase_app
+                        logger.info(f"Auto-initialized project {project_id} into pyrebase_apps on startup.")
                     except Exception as e:
                         logger.error(f"Failed to auto-initialize project {project_id} on startup: {e}")
             else:
