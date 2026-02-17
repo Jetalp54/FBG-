@@ -3280,6 +3280,12 @@ def update_campaign_result(campaign_id: str, project_id: str, success: bool, use
     
     # CRITICAL FIX: Also update the campaign object itself with progress data for frontend display
     try:
+        # Update in-memory active_campaigns immediately to prevent overwrite by status updates
+        if campaign_id in active_campaigns:
+            active_campaigns[campaign_id]['processed'] = processed
+            active_campaigns[campaign_id]['successful'] = campaign_results[key]["successful"]
+            active_campaigns[campaign_id]['failed'] = campaign_results[key]["failed"]
+
         if os.getenv('USE_DATABASE') == 'true':
             # Database mode: Update campaign in DB
             conn = get_db_connection()
