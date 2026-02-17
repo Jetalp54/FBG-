@@ -1040,23 +1040,46 @@ def load_daily_counts():
     except Exception as e:
         logger.error(f"Error loading daily counts: {str(e)}")
 
+# Global lock for campaign results file
+import threading
+import time
+import os
+results_lock = threading.RLock()
+
 def save_campaign_results_to_file():
-    try:
-        with open(CAMPAIGN_RESULTS_FILE, 'w') as f:
-            json.dump(campaign_results, f, indent=2)
-    except Exception as e:
-        logger.error(f"Error saving campaign results: {str(e)}")
+    """Save campaign results to file with thread safety"""
+    with results_lock:
+        try:
+            with open(CAMPAIGN_RESULTS_FILE, 'w') as f:
+                json.dump(campaign_results, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save campaign results: {e}")
 
 def load_campaign_results_from_file():
-    if not os.path.exists(CAMPAIGN_RESULTS_FILE):
-        return
-    try:
-        with open(CAMPAIGN_RESULTS_FILE, 'r') as f:
-            loaded = json.load(f)
-            campaign_results.clear()
-            campaign_results.update(loaded)
-    except Exception as e:
-        logger.error(f"Error loading campaign results: {str(e)}")
+    """Load campaign results from file with thread safety"""
+    global campaign_results
+    with results_lock:
+        if not os.path.exists(CAMPAIGN_RESULTS_FILE):
+            campaign_results = {}
+            return
+
+        try:
+            with open(CAMPAIGN_RESULTS_FILE, 'r') as f:
+                content = f.read().strip()
+                if not content:
+                    campaign_results = {}
+                    return
+                campaign_results = json.loads(content)
+        except json.JSONDecodeError:
+            logger.error(f"Corrupted campaign results file. Backing up and resetting.")
+            try:
+                os.rename(CAMPAIGN_RESULTS_FILE, f"{CAMPAIGN_RESULTS_FILE}.bak.{int(time.time())}")
+            except:
+                pass
+            campaign_results = {}
+        except Exception as e:
+            logger.error(f"Failed to load campaign results: {e}")
+            campaign_results = {}
 
 # NEW: Data Lists Storage Functions
 def save_data_lists_to_file():
@@ -3416,101 +3439,108 @@ def save_campaign_results_to_file():
 
 def create_campaign_result(campaign_id: str, project_id: str, total_users: int):
     """Create a new campaign result entry"""
-    result = {
-        "campaign_id": str(campaign_id) if campaign_id is not None else '',
-        "project_id": str(project_id) if project_id is not None else '',
-        "total_users": total_users,
-        "successful": 0,
-        "failed": 0,
-        "errors": [],
-        "start_time": datetime.now().isoformat(),
-        "end_time": None,
-        "status": "running"
-    }
-    key = f"{campaign_id}_{project_id}"
-    campaign_results[key] = result
-    save_campaign_results_to_file()
-    return result
+    with results_lock:
+        result = {
+            "campaign_id": str(campaign_id) if campaign_id is not None else '',
+            "project_id": str(project_id) if project_id is not None else '',
+            "total_users": total_users,
+            "successful": 0,
+            "failed": 0,
+            "errors": [],
+            "start_time": datetime.now().isoformat(),
+            "end_time": None,
+            "status": "running"
+        }
+        key = f"{campaign_id}_{project_id}"
+        campaign_results[key] = result
+        save_campaign_results_to_file()
+        return result
 
 def update_campaign_result(campaign_id: str, project_id: str, success: bool, user_id: Optional[str] = None, email: Optional[str] = None, error: Optional[str] = None):
     """Update campaign result with success/failure"""
-    campaign_id = str(campaign_id) if campaign_id is not None else ''
-    project_id = str(project_id) if project_id is not None else ''
-    user_id = str(user_id) if user_id is not None else ''
-    email = str(email) if email is not None else ''
-    error = str(error) if error is not None else ''
-    key = f"{campaign_id}_{project_id}"
-    if key not in campaign_results:
-        return
-    if success:
-        campaign_results[key]["successful"] += 1
-    else:
-        campaign_results[key]["failed"] += 1
-        if error and user_id:
-            campaign_results[key]["errors"].append({
-                "user_id": user_id,
-                "email": email,
-                "error": error,
-                "timestamp": datetime.now().isoformat()
-            })
-    # Update status if all users processed
-    total = campaign_results[key]["total_users"]
-    processed = campaign_results[key]["successful"] + campaign_results[key]["failed"]
-    if processed >= total:
-        campaign_results[key]["end_time"] = datetime.now().isoformat()
-        campaign_results[key]["status"] = "completed" if campaign_results[key]["failed"] == 0 else "partial"
-    save_campaign_results_to_file()
+    with results_lock:
+        campaign_id = str(campaign_id) if campaign_id is not None else ''
+        project_id = str(project_id) if project_id is not None else ''
+        user_id = str(user_id) if user_id is not None else ''
+        email = str(email) if email is not None else ''
+        error = str(error) if error is not None else ''
+        key = f"{campaign_id}_{project_id}"
+        
+        # Initialize if missing (safety)
+        if key not in campaign_results:
+             create_campaign_result(campaign_id, project_id, 0)
+             
+        if success:
+            campaign_results[key]["successful"] += 1
+        else:
+            campaign_results[key]["failed"] += 1
+            if error and user_id:
+                campaign_results[key]["errors"].append({
+                    "user_id": user_id,
+                    "email": email,
+                    "error": error,
+                    "timestamp": datetime.now().isoformat()
+                })
+        # Update status if all users processed
+        total = campaign_results[key]["total_users"]
+        # Safety check for total=0 to avoid division by zero or premature completion if total wasn't set correctly
+        if total > 0:
+            processed = campaign_results[key]["successful"] + campaign_results[key]["failed"]
+            if processed >= total:
+                campaign_results[key]["end_time"] = datetime.now().isoformat()
+                campaign_results[key]["status"] = "completed" if campaign_results[key]["failed"] == 0 else "partial"
+        
+        save_campaign_results_to_file()
+        
+        # CRITICAL FIX: Also update the campaign object itself with progress data for frontend display
+        try:
+            # Update in-memory active_campaigns immediately to prevent overwrite by status updates
+            if campaign_id in active_campaigns:
+                active_campaigns[campaign_id]['processed'] = campaign_results[key]["successful"] + campaign_results[key]["failed"]
+                active_campaigns[campaign_id]['successful'] = campaign_results[key]["successful"]
+                active_campaigns[campaign_id]['failed'] = campaign_results[key]["failed"]
     
-    # CRITICAL FIX: Also update the campaign object itself with progress data for frontend display
-    try:
-        # Update in-memory active_campaigns immediately to prevent overwrite by status updates
-        if campaign_id in active_campaigns:
-            active_campaigns[campaign_id]['processed'] = processed
-            active_campaigns[campaign_id]['successful'] = campaign_results[key]["successful"]
-            active_campaigns[campaign_id]['failed'] = campaign_results[key]["failed"]
-
-        if os.getenv('USE_DATABASE') == 'true':
-            # Database mode: Update campaign in DB
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE campaigns 
+            if os.getenv('USE_DATABASE') == 'true':
+                # Database mode: Update campaign in DB
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE campaigns 
                 SET processed = %s, successful = %s, failed = %s 
                 WHERE id = %s
             """, (processed, campaign_results[key]["successful"], campaign_results[key]["failed"], campaign_id))
-            conn.commit()
-            cursor.close()
-            conn.close()
-        else:
-            # File mode: Update campaign in CAMPAIGNS_FILE
-            logger.info(f"Attempting to update campaign {campaign_id} in {CAMPAIGNS_FILE}")
-            logger.info(f"campaign_results[{key}] = {campaign_results.get(key, 'KEY NOT FOUND!')}")
-            logger.info(f"Progress data: processed={processed}, successful={campaign_results[key]['successful']}, failed={campaign_results[key]['failed']}")
-            if os.path.exists(CAMPAIGNS_FILE):
-                with open(CAMPAIGNS_FILE, 'r') as f:
-                    campaigns_data = json.load(f)
-                logger.info(f"Loaded {len(campaigns_data)} campaigns from file")
-                
-                campaign_found = False
-                for campaign in campaigns_data:
-                    if campaign.get('id') == campaign_id:
-                        logger.info(f"Found campaign {campaign_id}, updating progress fields")
-                        campaign['processed'] = processed
-                        campaign['successful'] = campaign_results[key]["successful"]
-                        campaign['failed'] = campaign_results[key]["failed"]
-                        campaign_found = True
-                        break
-                
-                if campaign_found:
-                    with open(CAMPAIGNS_FILE, 'w') as f:
-                        json.dump(campaigns_data, f, indent=2)
-                    logger.info(f"Successfully updated campaign {campaign_id} in campaigns.json")
-                else:
-                    logger.warning(f"Campaign {campaign_id} NOT found in campaigns.json!")
+                conn.commit()
+                cursor.close()
+                conn.close()
             else:
-                logger.error(f"CAMPAIGNS_FILE {CAMPAIGNS_FILE} does not exist!")
-    except Exception as e:
-        logger.error(f"Failed to update campaign progress in storage: {e}")
+                # File mode: Update campaign in CAMPAIGNS_FILE
+                logger.info(f"Attempting to update campaign {campaign_id} in {CAMPAIGNS_FILE}")
+                logger.info(f"campaign_results[{key}] = {campaign_results.get(key, 'KEY NOT FOUND!')}")
+                logger.info(f"Progress data: processed={processed}, successful={campaign_results[key]['successful']}, failed={campaign_results[key]['failed']}")
+                if os.path.exists(CAMPAIGNS_FILE):
+                    with open(CAMPAIGNS_FILE, 'r') as f:
+                        campaigns_data = json.load(f)
+                    
+                    campaign_found = False
+                    for campaign in campaigns_data:
+                        if campaign.get('id') == campaign_id:
+                            logger.info(f"Found campaign {campaign_id}, updating progress fields")
+                            campaign['processed'] = processed
+                            campaign['successful'] = campaign_results[key]["successful"]
+                            campaign['failed'] = campaign_results[key]["failed"]
+                            campaign_found = True
+                            break
+                    
+                    if campaign_found:
+                        with open(CAMPAIGNS_FILE, 'w') as f:
+                            json.dump(campaigns_data, f, indent=2)
+                        logger.info(f"Successfully updated campaign {campaign_id} in campaigns.json")
+                    else:
+                        logger.warning(f"Campaign {campaign_id} NOT found in campaigns.json!")
+                else:
+                    logger.error(f"CAMPAIGNS_FILE {CAMPAIGNS_FILE} does not exist!")
+        except Exception as e:
+            logger.error(f"Failed to update campaign progress in storage: {e}")
 
 def get_campaign_results(campaign_id: Optional[str] = None, project_id: Optional[str] = None):
     """Get campaign results, optionally filtered"""
