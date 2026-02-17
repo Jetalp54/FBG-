@@ -7,11 +7,26 @@ pkill -f "celery worker" || true
 pkill -f "firebaseBackend.py" || true
 sleep 2
 
-# 2. Check Redis
+# 2. Check Redis & PostgreSQL (The "Next Level" Infrastructure)
 if ! command -v redis-server &> /dev/null; then
     echo "❌ Redis is not installed. Installing..."
     sudo apt update && sudo apt install -y redis-server python3-venv python3-pip
 fi
+
+if ! command -v psql &> /dev/null; then
+    echo "❌ PostgreSQL is not installed. Installing Enterprise Database..."
+    sudo apt install -y postgresql postgresql-contrib libpq-dev
+    
+    # Setup DB User and Database
+    echo "🐘 Configuring PostgreSQL..."
+    sudo -u postgres psql -c "CREATE USER firebase_user WITH PASSWORD 'firebase_password';" || true
+    sudo -u postgres psql -c "CREATE DATABASE firebase_db OWNER firebase_user;" || true
+    sudo -u postgres psql -c "ALTER USER firebase_user CREATEDB;" || true
+fi
+
+# Export DB Connection String for App
+export DB_URL="postgresql://firebase_user:firebase_password@localhost/firebase_db"
+export USE_DATABASE="true"
 
 # Ensure Redis is running
 sudo service redis-server start

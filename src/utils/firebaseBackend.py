@@ -2483,7 +2483,41 @@ async def create_campaign(campaign: CampaignCreate, request: Request):
             "schedule_config": campaign.schedule_config
         }
         
-        # Save to Memory & File (Single Source of Truth)
+        # PERSIST TO DATABASE (The Next Level)
+        # We try to write to DB. If it fails (e.g. connection error), we log but continue in memory.
+        try:
+            conn = get_db_connection()
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO campaigns (
+                        name, project_ids, batch_size, workers, template, status, 
+                        owner_id, sending_mode, turbo_config, throttle_config, schedule_config,
+                        campaign_uuid
+                    ) VALUES (%s, %s, %s, %s, %s, %s, (SELECT id FROM app_users WHERE username=%s), %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    campaign.name, 
+                    json.dumps(campaign.projectIds),
+                    campaign.batchSize,
+                    campaign.workers,
+                    campaign.template,
+                    "pending",
+                    current_user,
+                    campaign.sending_mode,
+                    json.dumps(campaign.turbo_config),
+                    json.dumps(campaign.throttle_config),
+                    json.dumps(campaign.schedule_config),
+                    campaign_id
+                ))
+                db_id = cursor.fetchone()[0]
+                campaign_data['db_id'] = db_id 
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            logger.error(f"⚠️ DB Persistence Warning: {e}. Falling back to file-only.")
+        
+        # Save to Memory & File
         active_campaigns[campaign_id] = campaign_data
         save_campaigns_to_file()
         
@@ -2495,56 +2529,107 @@ async def create_campaign(campaign: CampaignCreate, request: Request):
 
 @app.get("/campaigns")
 async def list_campaigns(request: Request, page: int = 1, limit: int = 10):
-    """List campaigns with user isolation and pagination, sorted by creation date (newest first)"""
+    """
+    List campaigns. 
+    Strategy: Try DB -> Fallback to File -> Overlay Memory Stats.
+    """
     try:
         current_user = get_current_user_from_request(request)
         
-        # Check if user is admin
+        # Check Admin Status
         users = load_app_users()
         user_data = next((u for u in users.get('users', []) if u.get('username') == current_user), None)
         is_admin = user_data and user_data.get('role') == 'admin'
         
-        # Load campaigns from file to get ownership info
-        campaigns_data = load_campaigns_from_file()
+        campaigns_list = []
+        db_success = False
         
-        # Sync with active_campaigns memory for live stats
-        # This is where we merge the Redis-driven states into the persistent file list
-        synced_list = []
-        for c in campaigns_data:
+        # 1. Try DB
+        try:
+            conn = get_db_connection()
+            if conn:
+                cursor = conn.cursor()
+                query = """
+                    SELECT c.id, c.campaign_uuid, c.name, c.project_ids, c.batch_size, c.workers, c.template, 
+                           c.status, c.processed, c.successful, c.failed, c.created_at,
+                           u.username as owner, c.sending_mode, c.turbo_config
+                    FROM campaigns c
+                    LEFT JOIN app_users u ON c.owner_id = u.id
+                """
+                params = []
+                if not is_admin:
+                    query += " WHERE u.username = %s"
+                    params.append(current_user)
+                query += " ORDER BY c.created_at DESC"
+                
+                cursor.execute(query, tuple(params))
+                rows = cursor.fetchall()
+                cols = [desc[0] for desc in cursor.description]
+                
+                for row in rows:
+                    c = dict(zip(cols, row))
+                    c_uuid = c.get('campaign_uuid') or str(c['id'])
+                    campaign_obj = {
+                        "id": c_uuid,
+                        "db_id": c['id'],
+                        "name": c['name'],
+                        "projectIds": c['project_ids'] if isinstance(c['project_ids'], list) else json.loads(c['project_ids'] if c['project_ids'] else '[]'),
+                        "batchSize": c['batch_size'],
+                        "workers": c['workers'],
+                        "template": c['template'],
+                        "status": c['status'],
+                        "createdAt": c['created_at'].isoformat() if c['created_at'] else "",
+                        "processed": c['processed'],
+                        "successful": c['successful'],
+                        "failed": c['failed'],
+                        "ownerId": c['owner'],
+                        "sending_mode": c.get('sending_mode', 'turbo'),
+                        "turbo_config": c['turbo_config'] if isinstance(c['turbo_config'], dict) else json.loads(c['turbo_config'] if c['turbo_config'] else '{}')
+                    }
+                    campaigns_list.append(campaign_obj)
+                
+                conn.close()
+                db_success = True
+        except Exception as e:
+            logger.warning(f"DB List Failed ({e}). Falling back to file.")
+            
+        # 2. Fallback to File if DB failed or returned nothing (and we expect something?)
+        # Actually if DB is empty, it might just be empty. But if checks failed, use file.
+        if not db_success:
+            campaigns_list = load_campaigns_from_file()
+            # Filter ownership
+            if not is_admin:
+                campaigns_list = [c for c in campaigns_list if c.get('ownerId') == current_user]
+            # Sort
+            campaigns_list.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
+            
+        # 3. Overlay Live Stats from Memory
+        final_list = []
+        for c in campaigns_list:
             c_id = c.get('id')
+            # If in memory (active), use that version as it has live counters
             if c_id in active_campaigns:
-                # Use memory version which has live stats
-                synced_list.append(active_campaigns[c_id])
+                final_list.append(active_campaigns[c_id])
             else:
-                synced_list.append(c)
-        
-        # Filter campaigns based on user access
-        if is_admin:
-            # Admin sees all campaigns
-            campaigns_list = synced_list
-        else:
-            # Users see only their own campaigns
-            campaigns_list = [c for c in synced_list if c.get('ownerId') == current_user]
-        
-        # Sort by creation date (newest first)
-        campaigns_list.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
-        
-        # Calculate pagination
-        total_campaigns = len(campaigns_list)
+                final_list.append(c)
+                
+        # Pagination
+        total_campaigns = len(final_list)
         total_pages = (total_campaigns + limit - 1) // limit
         start_index = (page - 1) * limit
         end_index = start_index + limit
         
-        final_list = campaigns_list[start_index:end_index]
+        paginated = final_list[start_index:end_index]
         
         return {
-            "campaigns": final_list,
+            "campaigns": paginated,
             "total": total_campaigns,
             "page": page,
             "pages": total_pages,
             "user": current_user, 
-            "source": "file_memory"
+            "source": "database" if db_success else "file_fallback"
         }
+
     except Exception as e:
         logger.error(f"List Campaigns Error: {e}")
         return {"campaigns": [], "total": 0, "page": page, "pages": 0, "error": str(e)}
@@ -6505,10 +6590,26 @@ def recover_state_from_redis():
 # --- ENTERPRISE MONITORING ---
 @app.on_event("startup")
 async def startup_event():
-    # 1. Recover State from File & Redis
+    # 1. Initialize DB Tables (Try)
+    db_available = False
+    try:
+        init_database()
+        logger.info("✅ Database Schema Initialized")
+        db_available = True
+    except Exception as e:
+        logger.warning(f"⚠️ DB Init Failed: {e}. Running in File-Only Mode.")
+        
+    # 2. Recover State (Hybrid)
+    if db_available:
+        try:
+            load_active_campaigns_from_db()
+        except Exception as e:
+            logger.error(f"DB Recovery Failed: {e}")
+            
+    # Always run Redis/File recovery as a safety net (it merges/overlays)
     recover_state_from_redis()
     
-    # 2. Start Redis Monitor
+    # 3. Start Redis Monitor
     logger.info("🚀 Starting Enterprise Redis Monitor...")
     threading.Thread(target=monitor_redis_progress, daemon=True).start()
 
