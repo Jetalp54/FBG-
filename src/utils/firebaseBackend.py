@@ -2465,6 +2465,11 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
     pyrebase_app = pyrebase_apps[project_id]
     pyrebase_auth = pyrebase_app.auth()
     
+    # CRITICAL FIX: Initialize campaign result tracking for this project
+    # This creates the campaign_results.json entry so update_campaign_result can track progress
+    logger.info(f"[{project_id}] Initializing campaign result tracking for {len(user_ids)} users")
+    create_campaign_result(campaign_id, project_id, len(user_ids))
+    
     # Optimize worker configuration
     if workers is None:
         workers = 50  # Increased default workers for Turbo
