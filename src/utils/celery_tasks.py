@@ -120,12 +120,26 @@ def process_campaign_batch(self, campaign_id, project_id, user_ids):
     errors_key = f"campaign:{campaign_id}:errors"
 
     # 2. Iterate and Send
+    logs_to_insert = []
+    
     for uid in user_ids:
         email = uid_email_map.get(uid)
         
+        # Prepare Log Entry Template
+        log_entry = {
+            'campaign_id': str(campaign_id),
+            'project_id': str(project_id),
+            'user_id': str(uid),
+            'email': email,
+            'status': 'failed',
+            'error': None
+        }
+        
         if not email:
-            # Email not found for UID
             failed += 1
+            log_entry['error'] = "Email not found for UID"
+            logs_to_insert.append(log_entry)
+            
             redis_client.hincrby(stats_key, "failed", 1)
             redis_client.hincrby(stats_key, "processed", 1)
             redis_client.hincrby(f"campaign:{campaign_id}:stats", "failed", 1)
@@ -134,17 +148,70 @@ def process_campaign_batch(self, campaign_id, project_id, user_ids):
         try:
             auth_client.send_password_reset_email(email)
             successful += 1
+            log_entry['status'] = 'sent'
+            logs_to_insert.append(log_entry)
+            
             redis_client.hincrby(stats_key, "successful", 1)
             redis_client.hincrby(stats_key, "processed", 1)
             redis_client.hincrby(f"campaign:{campaign_id}:stats", "successful", 1)
         except Exception as e:
             failed += 1
+            log_entry['error'] = str(e)[:200]
+            logs_to_insert.append(log_entry)
+            
             redis_client.hincrby(stats_key, "failed", 1)
             redis_client.hincrby(stats_key, "processed", 1)
             redis_client.hincrby(f"campaign:{campaign_id}:stats", "failed", 1)
             
+            # Legacy error list for quick debug (optional, can be disabled if DB is reliable)
             error_data = json.dumps({'email': email, 'uid': uid, 'error': str(e)[0:200], 'project': project_id})
             redis_client.lpush(errors_key, error_data)
             redis_client.ltrim(errors_key, 0, 999) 
+            
+    # 3. Bulk Insert into Database
+    try:
+        save_batch_logs(logs_to_insert)
+    except Exception as e:
+        logger.error(f"DB Log Insertion Failed: {e}")
+        # We don't fail the task because emails were sent/failed, just logging failed.
 
-    return {'project_id': project_id, 'successful': successful, 'failed': failed}
+    return {'project_id': project_id, 'successful': successful, 'failed': failed} 
+
+# Database Helper
+import psycopg2
+from urllib.parse import urlparse
+
+def get_db_connection():
+    try:
+        db_url = os.getenv('DB_URL')
+        if not db_url: return None
+        result = urlparse(db_url)
+        return psycopg2.connect(
+            database=result.path[1:],
+            user=result.username,
+            password=result.password,
+            host=result.hostname,
+            port=result.port
+        )
+    except Exception as e:
+        logger.error(f"DB Connect Error: {e}")
+        return None
+
+def save_batch_logs(logs):
+    if not logs: return
+    conn = get_db_connection()
+    if not conn: return
+    
+    try:
+        cursor = conn.cursor()
+        # Efficient Bulk Insert
+        args_str = ','.join(cursor.mogrify("(%s,%s,%s,%s,%s,%s)", (
+            x['campaign_id'], x['project_id'], x['user_id'], x['email'], x['status'], x['error']
+        )).decode('utf-8') for x in logs)
+        
+        cursor.execute("INSERT INTO campaign_logs (campaign_id, project_id, user_id, email, status, error_message) VALUES " + args_str)
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Batch Insert Error: {e}")
+    finally:
+        if conn: conn.close()

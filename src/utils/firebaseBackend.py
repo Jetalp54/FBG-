@@ -38,6 +38,8 @@ except ImportError:
 
 # Database imports and connection
 import psycopg2
+import redis
+import re
 from psycopg2.extras import RealDictCursor
 from urllib.parse import urlparse
 
@@ -146,6 +148,21 @@ def init_database():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS campaign_logs (
+                id SERIAL PRIMARY KEY,
+                campaign_id VARCHAR(100) NOT NULL,
+                project_id VARCHAR(100) NOT NULL,
+                user_id VARCHAR(255),
+                email VARCHAR(255),
+                status VARCHAR(20), -- 'sent', 'failed'
+                error_message TEXT,
+                attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_campaign_logs_campaign_id ON campaign_logs(campaign_id);
+            CREATE INDEX IF NOT EXISTS idx_campaign_logs_project_id ON campaign_logs(project_id);
         ''')
         
         # Migration: Add progress columns if they don't exist
@@ -2936,7 +2953,7 @@ async def send_campaign(request: Request):
                 total_users = 0
                 total_batches = 0
                 
-                # Initialize Campaign Status (UI shows 'Running')
+                # Initialize Campaign Stats (UI shows 'Running')
                 create_campaign_result(campaign_id, project_id, 0)
                 
                 # Iterate and Enqueue
@@ -2971,70 +2988,16 @@ async def send_campaign(request: Request):
                     "success": False, 
                     "error": f"Enterprise Dispatch Failed: {str(e)}. Check Redis."
                 }
-            
-            # --- LEGACY CODE BELOW IS UNREACHABLE ---
-            pass
-            
-            logger.info(f"🚀 [TURBO MODE] Firing all resources")
-            
-            total_successful = 0
-            total_failed = 0
-            project_results = []
-            
-            # Process all projects in parallel using dedicated threads
-            # This bypasses the default thread pool limits (max_workers=CPU*5)
-            import threading
-            import queue
-            
-            result_queue = queue.Queue()
-            threads = []
-            
-            def thread_wrapper(proj, c_id):
-                try:
-                    p_id = str(proj.get('projectId', ''))
-                    u_ids = proj.get('userIds', [])
-                    
-                    # Run the blocking fire_all_emails function
-                    logger.info(f"⚡ [TURBO] Thread started for project {p_id}")
-                    
-                    # Use configured workers or default to 50
-                    turbo_workers = 50
-                    if request_data.get('turbo_config'):
-                        turbo_workers = request_data.get('turbo_config', {}).get('workers', 50)
-                    elif request_data.get('workers'):
-                         turbo_workers = request_data.get('workers')
-                    
-                    successful = fire_all_emails(
-                        p_id, 
-                        u_ids, 
-                        c_id, 
-                        turbo_workers, 
-                        True, 
-                        None, 
-                        request_data.get('sending_limit'), 
-                        request_data.get('sending_offset', 0)
-                    ) 
-                    
-                    result_queue.put({
-                        'project_id': p_id,
-                        'successful': successful,
-                        'status': 'completed'
-                    })
-                except Exception as e:
-                    logger.error(f"Thread failed for {proj.get('projectId')}: {e}")
-                    result_queue.put({
-                        'project_id': proj.get('projectId'),
-                        'error': str(e),
-                        'status': 'failed'
-                    })
 
-            # Launch a thread for EVERY project
-            for project in projects:
-                t = threading.Thread(target=thread_wrapper, args=(project, campaign_id))
-                t.start()
-                threads.append(t)
             
-            logger.info(f"🚀 Launched {len(threads)} dedicated threads for Turbo Mode")
+
+
+            
+
+
+
+            
+
             
             # Non-blocking wait: we can't await threads in asyncio, 
             # so we use a background task to monitor them if we want to update status later.
@@ -3046,44 +3009,12 @@ async def send_campaign(request: Request):
             # The original code awaited `run_in_executor`. 
             # Let's start a background task to wait for threads and update status.
             
-            def wait_for_completion():
-                logger.info(f"Monitoring {len(threads)} Turbo threads...")
-                for t in threads:
-                    t.join()
-                
-                logger.info("All Turbo threads completed.")
-                
-                # Aggregate results
-                while not result_queue.empty():
-                    res = result_queue.get()
-                    project_results.append(res)
-                    if res.get('status') == 'completed':
-                        nonlocal total_successful
-                        total_successful += res.get('successful', 0)
-                    else:
-                        nonlocal total_failed
-                        total_failed += 1
-                
-                # Update Campaign Status in Background
-                if campaign_id in active_campaigns:
-                    active_campaigns[campaign_id]['status'] = 'completed'
-                    active_campaigns[campaign_id]['completedAt'] = datetime.now().isoformat()
-                    active_campaigns[campaign_id]['totalSent'] = total_successful # field might vary
-                    save_campaigns_to_file()
-                
-                logger.info(f"Campaign {campaign_id} finished. Total Successful: {total_successful}")
 
-            # Run monitoring in a separate thread so we don't block the API response
-            monitor_thread = threading.Thread(target=wait_for_completion)
-            monitor_thread.start()
+                
 
-            return {
-                "success": True,
-                "mode": "turbo",
-                "message": f"Launched {len(projects)} projects in parallel (Turbo Mode)",
-                "campaignId": campaign_id,
-                "project_count": len(projects)
-            }
+
+
+
         
         # ==================================================================
         # MODE 2: THROTTLED - Rate Limited (Millisecond-based)
@@ -6390,6 +6321,163 @@ async def distribute_data_list(list_id: str, distribute: DataListDistribute):
         logger.error(f"Failed to distribute data list: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to distribute data list: {str(e)}")
 
+
+@app.get("/campaigns/{campaign_id}/logs")
+async def get_campaign_logs(campaign_id: str, limit: int = 50, offset: int = 0, status: str = None):
+    """
+    Fetch paginated logs from PostgreSQL for high-volume campaigns.
+    Replaces the need to load 1M+ items into memory.
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return {"logs": [], "total": 0, "error": "Database not connected"}
+            
+        cursor = conn.cursor()
+        
+        # Base Query
+        query = "SELECT log.email, log.status, log.error_message, log.attempted_at FROM campaign_logs log WHERE log.campaign_id = %s"
+        params = [campaign_id]
+        
+        # Optional Filter
+        if status:
+            query += " AND log.status = %s"
+            params.append(status)
+            
+        # Count Total for Pagination
+        count_query = f"SELECT COUNT(*) FROM campaign_logs WHERE campaign_id = %s {'AND status = %s' if status else ''}"
+        cursor.execute(count_query, params)
+        total_count = cursor.fetchone()['count']
+        
+        # Fetch Page
+        query += " ORDER BY log.attempted_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+        
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        
+        logs = []
+        for row in rows:
+            logs.append({
+                "email": row['email'],
+                "status": row['status'],
+                "error": row['error_message'],
+                "timestamp": str(row['attempted_at'])
+            })
+            
+        cursor.close()
+        conn.close()
+        
+        return {
+            "logs": logs,
+            "total": total_count,
+            "limit": limit,
+            "offset": offset
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch logs: {e}")
+        return {"logs": [], "total": 0, "error": str(e)}
+
+
+
+# --- ENTERPRISE MONITORING ---
+@app.on_event("startup")
+async def startup_event():
+    logger.info("🚀 Starting Enterprise Redis Monitor...")
+    threading.Thread(target=monitor_redis_progress, daemon=True).start()
+
+def monitor_redis_progress():
+    """Sync Redis stats to in-memory campaign_results and active_campaigns"""
+    try:
+        redis_host = os.getenv('REDIS_HOST', 'localhost')
+        redis_port = int(os.getenv('REDIS_PORT', 6379))
+        redis_db = int(os.getenv('REDIS_DB', 0))
+        r = redis.Redis(host=redis_host, port=redis_port, db=redis_db, decode_responses=True)
+        
+        logger.info(f"✅ Monitor connected to Redis at {redis_host}:{redis_port}")
+        
+        while True:
+            try:
+                # Scan for active campaign keys
+                keys = []
+                cursor = '0'
+                while cursor != 0:
+                    cursor, batch = r.scan(cursor=cursor, match='campaign_status:*', count=100)
+                    keys.extend(batch)
+                
+                if not keys:
+                    time.sleep(2)
+                    continue
+                
+                pipe = r.pipeline()
+                for key in keys:
+                    pipe.hgetall(key)
+                results = pipe.execute()
+                
+                updated_campaign_ids = set()
+                
+                for key, data in zip(keys, results):
+                    if not data: continue
+                    parts = key.split(':')
+                    if len(parts) != 3: continue
+                    
+                    c_id, p_id = parts[1], parts[2]
+                    
+                    succ = int(data.get('successful', 0))
+                    fail = int(data.get('failed', 0))
+                    
+                    mem_key = f"{c_id}_{p_id}"
+                    
+                    # Ensure initialized in granular dict
+                    if mem_key not in campaign_results:
+                        campaign_results[mem_key] = {
+                            'project_id': p_id, 
+                            'successful': 0, 
+                            'failed': 0,
+                            'total_users': 0,
+                            'status': 'running'
+                        }
+                    
+                    # Update Granular Stats
+                    campaign_results[mem_key]['successful'] = succ
+                    campaign_results[mem_key]['failed'] = fail
+                    
+                    updated_campaign_ids.add(c_id)
+
+                # Aggregate for UI Summary
+                for c_id in updated_campaign_ids:
+                    total_succ = 0
+                    total_fail = 0
+                    
+                    # Sum up all projects for this campaign
+                    for k, v in campaign_results.items():
+                        if k.startswith(f"{c_id}_"):
+                            total_succ += v.get('successful', 0)
+                            total_fail += v.get('failed', 0)
+                    
+                    # Update active_campaigns entry
+                    if c_id in active_campaigns:
+                        active_campaigns[c_id]['successful'] = total_succ
+                        active_campaigns[c_id]['failed'] = total_fail
+                        active_campaigns[c_id]['processed'] = total_succ + total_fail
+                        
+                        # Check Completion
+                        total = active_campaigns[c_id].get('total_users', 0)
+                        if total > 0 and (total_succ + total_fail) >= total:
+                            if active_campaigns[c_id]['status'] != 'completed':
+                                active_campaigns[c_id]['status'] = 'completed'
+                                active_campaigns[c_id]['completedAt'] = datetime.now().isoformat()
+                                logger.info(f"🏁 Campaign {c_id} completed via Redis Monitor")
+                                save_campaigns_to_file()
+
+            except Exception as e:
+                logger.error(f"Redis Monitor Loop Error: {e}")
+            
+            time.sleep(1.0)
+            
+    except Exception as e:
+        logger.error(f"Failed to start Redis Monitor: {e}")
 
 if __name__ == "__main__":
     import uvicorn
