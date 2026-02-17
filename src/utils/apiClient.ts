@@ -9,10 +9,10 @@ class APIClient {
     // Get the current server IP from the browser
     const currentHost = window.location.hostname;
     const currentPort = window.location.port || '80';
-    
+
     // ALWAYS use IPv4 - no IPv6 addresses
     let serverIP = currentHost;
-    
+
     // If we have an IPv6 address, extract the IPv4 part
     if (currentHost.includes(':')) {
       // This is an IPv6 address, we need to get the IPv4
@@ -20,7 +20,7 @@ class APIClient {
       serverIP = 'localhost';
       console.warn('⚠️ IPv6 address detected, using localhost:8000 as fallback');
     }
-    
+
     // If we're on the server itself, use localhost:8000 for backend
     // If we're accessing remotely, use the same hostname (port 80 for Nginx proxy)
     if (serverIP === 'localhost' || serverIP === '127.0.0.1') {
@@ -29,9 +29,9 @@ class APIClient {
       // Remote server - use same hostname on port 80 (Nginx will proxy to backend)
       this.baseURL = `http://${serverIP}`;
     }
-    
+
     this.timeout = 30000;
-    
+
     console.log('🌐 API Client initialized with:', {
       currentHost,
       currentPort,
@@ -44,13 +44,13 @@ class APIClient {
 
   private async makeRequest(endpoint: string, options: RequestInit = {}): Promise<any> {
     const url = `${this.baseURL}${endpoint}`;
-    
+
     console.log(`🌐 Making API request to: ${url}`);
-    
+
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), this.timeout);
-      
+
       const response = await fetch(url, {
         ...options,
         signal: controller.signal,
@@ -59,17 +59,17 @@ class APIClient {
           ...options.headers,
         },
       });
-      
+
       clearTimeout(timeoutId);
-      
+
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
-      
+
       const data = await response.json();
       console.log(`✅ API response from ${url}:`, data);
       return data;
-      
+
     } catch (error) {
       console.error(`❌ API request failed to ${url}:`, error);
       throw error;
@@ -121,7 +121,7 @@ class APIClient {
   }
 
   // Projects
-  async getProjects(limit = 30, offset = 0) {
+  async getProjects(limit = 1000, offset = 0) {
     return this.makeRequest(`/projects?limit=${limit}&offset=${offset}`);
   }
 

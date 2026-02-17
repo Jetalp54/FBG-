@@ -19,7 +19,7 @@ export const ProjectsPage = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [pageSize, setPageSize] = useState(30);
+  const [pageSize, setPageSize] = useState(100);
   const [page, setPage] = useState(1);
   const [formData, setFormData] = useState({
     name: '',

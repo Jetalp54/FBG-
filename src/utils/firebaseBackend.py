@@ -2775,23 +2775,29 @@ async def send_campaign(request: Request):
             import concurrent.futures
             loop = asyncio.get_event_loop()
             
+            # Create a dedicated executor with enough workers for ALL projects
+            # This bypasses the default pool limit (usually CPU*5)
+            # giving every project its own thread immediately.
+            project_concurrency = max(len(projects) + 5, 20)
+            logger.info(f"🚀 [TURBO] initializing executor with {project_concurrency} workers for {len(projects)} projects")
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=project_concurrency)
+            
             async def process_project_turbo(proj):
                 proj_id = str(proj.get('projectId', ''))
                 specific_users = proj.get('userIds', [])
                 
                 # Use the optimized fire_all_emails function
-                # We run it in a separate thread because it's blocking (uses ThreadPoolExecutor inside)
                 try:
                     logger.info(f"⚡ [TURBO] Launching optimized sender for project {proj_id}")
                     
                     # Pass 'lightning=True' to enable maximum worker count (200)
                     successful = await loop.run_in_executor(
-                        None, 
+                        executor, 
                         fire_all_emails, 
                         proj_id, 
                         specific_users, 
                         campaign_id, 
-                        200,   # Force 200 workers
+                        200,   # Force 200 workers per project
                         True   # Lightning mode = True
                     )
                     
