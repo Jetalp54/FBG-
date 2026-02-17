@@ -3213,7 +3213,17 @@ async def copy_users(data: dict = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to copy users: {str(e)}")
 
+
 # New: Campaign management functions
+def save_campaign_results_to_file():
+    """Save campaign results dictionary to campaign_results.json file"""
+    try:
+        with open(CAMPAIGN_RESULTS_FILE, 'w') as f:
+            json.dump(campaign_results, f, indent=2)
+        logger.info(f"Saved {len(campaign_results)} campaign results to {CAMPAIGN_RESULTS_FILE}")
+    except Exception as e:
+        logger.error(f"Failed to save campaign results to file: {e}")
+
 def create_campaign_result(campaign_id: str, project_id: str, total_users: int):
     """Create a new campaign result entry"""
     result = {
