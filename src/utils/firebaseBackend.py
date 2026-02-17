@@ -976,85 +976,15 @@ def load_projects_from_file():
                         projects[project_id] = project
                 logger.info(f"Initialized global projects with {len(projects)} projects")
                 
-                logger.info(f"Initialized global projects with {len(projects)} projects")
-            else:
-                 # Even if we have projects, we should scan for NEW ones in /opt/FBG-/credentials
-                 pass
-
-            # --- Auto-Scan /opt/FBG-/credentials for NEW projects ---
-            cred_dir = "/opt/FBG-/credentials"
-            if os.path.exists(cred_dir):
-                logger.info(f"Scanning {cred_dir} for new project credentials...")
-                try:
-                    for filename in os.listdir(cred_dir):
-                        if filename.endswith(".json"):
-                            file_path = os.path.join(cred_dir, filename)
-                            try:
-                                with open(file_path, 'r') as key_file:
-                                    service_account = json.load(key_file)
-                                    project_id = service_account.get('project_id')
-                                    
-                                    if project_id and project_id not in projects:
-                                        logger.info(f"Found new project {project_id} in {filename}. Importing...")
-                                        
-                                        # Construct project object
-                                        new_project = {
-                                            "id": project_id,
-                                            "name": project_id,
-                                            "adminEmail": service_account.get('client_email', ''),
-                                            "apiKey": "", # Will be filled if user edits, or we can try to find it
-                                            "serviceAccount": service_account,
-                                            "createdAt": datetime.now().isoformat(),
-                                            "ownerId": "admin",
-                                            "status": "active"
-                                        }
-                                        projects[project_id] = new_project
-                                        
-                                        # Auto-initialize
-                                        try:
-                                            # Initialize Firebase Admin
-                                            if project_id not in firebase_apps:
-                                                from firebase_admin import credentials, initialize_app
-                                                cred = credentials.Certificate(service_account)
-                                                firebase_apps[project_id] = initialize_app(cred, name=project_id)
-                                                logger.info(f"Auto-initialized new project {project_id}")
-                                            
-                                            # Initialize Pyrebase (basic config)
-                                            if project_id not in pyrebase_apps:
-                                                 pyrebase_config = {
-                                                    "apiKey": "", # Missing, user needs to add? Or we mock it to allow auth ops that don't need it?
-                                                    "authDomain": f"{project_id}.firebaseapp.com",
-                                                    "databaseURL": f"https://{project_id}.firebaseio.com",
-                                                    "storageBucket": f"{project_id}.appspot.com"
-                                                }
-                                                 pyrebase_apps[project_id] = pyrebase.initialize_app(pyrebase_config)
-
-                                        except Exception as init_err:
-                                            logger.error(f"Failed to initialize imported project {project_id}: {init_err}")
-
-                            except Exception as e:
-                                logger.error(f"Failed to process credential file {filename}: {e}")
-                    
-                    # Save updated projects list
-                    save_projects_to_file()
-                    
-                except Exception as e:
-                    logger.error(f"Error scanning credentials directory: {e}")
-
-            # --- Re-initialize all projects (ensure everything is consistent) ---
-            for project_id, project in projects.items():
-                if project_id in firebase_apps and project_id in pyrebase_apps:
-                    continue # Already initialized
-                
-                try:
-                    from firebase_admin import credentials, initialize_app
-                    if project_id not in firebase_apps:
+                # --- Auto-reinitialize all projects into firebase_apps AND pyrebase_apps on startup ---
+                for project_id, project in projects.items():
+                    try:
+                        from firebase_admin import credentials, initialize_app
                         cred = credentials.Certificate(project['serviceAccount'])
                         firebase_app = initialize_app(cred, name=project_id)
                         firebase_apps[project_id] = firebase_app
-                        logger.info(f"Initialized project {project_id} into firebase_apps on startup.")
-                    
-                    if project_id not in pyrebase_apps:
+                        logger.info(f"Auto-initialized project {project_id} into firebase_apps on startup.")
+                        
                         # CRITICAL FIX: Also initialize Pyrebase for email sending
                         pyrebase_config = {
                             "apiKey": project.get('apiKey', ''),
@@ -1064,9 +994,11 @@ def load_projects_from_file():
                         }
                         pyrebase_app = pyrebase.initialize_app(pyrebase_config)
                         pyrebase_apps[project_id] = pyrebase_app
-                        logger.info(f"Initialized project {project_id} into pyrebase_apps on startup.")
-                except Exception as e:
-                    logger.error(f"Failed to auto-initialize project {project_id} on startup: {e}")
+                        logger.info(f"Auto-initialized project {project_id} into pyrebase_apps on startup.")
+                    except Exception as e:
+                        logger.error(f"Failed to auto-initialize project {project_id} on startup: {e}")
+            else:
+                logger.info(f"Global projects already has {len(projects)} projects, skipping reinitialization")
         return loaded
     except Exception as e:
         logger.error(f"Error loading projects: {str(e)}")
