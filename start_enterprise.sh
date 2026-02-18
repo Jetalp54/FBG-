@@ -29,16 +29,16 @@ if ! command -v fuser &> /dev/null; then MISSING_DEPS+=("psmisc"); fi  # For fus
 if ! command -v lsof &> /dev/null; then MISSING_DEPS+=("lsof"); fi    # For checking ports
 
 if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
-    echo "📦 Installing Missing Dependencies: ${MISSING_DEPS[*]}"
-    sudo apt update
-    sudo apt install -y "${MISSING_DEPS[@]}" python3-venv python3-pip
+    echo "📦 Installing Missing Dependencies: ${MISSING_DEPS[*]} (Check setup.log)"
+    sudo apt update >> setup.log 2>&1
+    sudo apt install -y "${MISSING_DEPS[@]}" python3-venv python3-pip >> setup.log 2>&1
     
     # Configure Postgres if it was just installed
     if [[ " ${MISSING_DEPS[*]} " =~ "postgresql" ]]; then
         echo "🐘 Configuring PostgreSQL User..."
-        sudo -u postgres psql -c "CREATE USER firebase_user WITH PASSWORD 'firebase_password';" || true
-        sudo -u postgres psql -c "CREATE DATABASE firebase_db OWNER firebase_user;" || true
-        sudo -u postgres psql -c "ALTER USER firebase_user CREATEDB;" || true
+        sudo -u postgres psql -c "CREATE USER firebase_user WITH PASSWORD 'firebase_password';" || true >> setup.log 2>&1
+        sudo -u postgres psql -c "CREATE DATABASE firebase_db OWNER firebase_user;" || true >> setup.log 2>&1
+        sudo -u postgres psql -c "ALTER USER firebase_user CREATEDB;" || true >> setup.log 2>&1
     fi
 fi
 
@@ -47,7 +47,7 @@ export DB_URL="postgresql://firebase_user:firebase_password@localhost/firebase_d
 export USE_DATABASE="true"
 
 # Ensure Redis is running
-sudo service redis-server start
+sudo service redis-server start >> setup.log 2>&1
 
 # 2. Setup Virtual Environment (Fixes Externally Managed Environment Error)
 if [ ! -d "venv" ]; then
@@ -59,8 +59,8 @@ echo "🔌 Activating Virtual Environment..."
 source venv/bin/activate
 
 # 3. Install Python Dependencies
-echo "📦 Installing Enterprise Dependencies..."
-pip install -r requirements-enterprise.txt
+echo "📦 Installing Enterprise Dependencies (Check setup.log)..."
+pip install -r requirements-enterprise.txt >> setup.log 2>&1
 
 # 4. Start Celery Worker (Background)
 echo "👷 Starting Celery Worker (100 Concurrent Threads)..."
