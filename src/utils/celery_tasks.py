@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 redis_client = redis.Redis.from_url(celery_app.conf.broker_url)
 
 # Rate Limiter Import
-from src.utils.rate_limiter import RedisRateLimiter
+from .rate_limiter import RedisRateLimiter
 
 # Global Cache for Initialized Apps in this Worker Process
 firebase_apps = {}
@@ -26,7 +26,9 @@ pyrebase_apps = {}
 projects_cache = {}
 
 # Load Projects (File Based for now, DB later)
-PROJECTS_FILE = 'projects.json'
+# Use absolute path relative to this file's directory to ensure worker finds it
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECTS_FILE = os.path.join(BASE_DIR, 'projects.json')
 
 def get_project_credentials(project_id):
     """Retrieve project credentials from cache or file"""
@@ -38,7 +40,15 @@ def get_project_credentials(project_id):
             if os.path.exists(PROJECTS_FILE):
                 with open(PROJECTS_FILE, 'r') as f:
                     projects = json.load(f)
-                    projects_cache = {str(p['id']): p for p in projects}
+                    # Robust loading: skip entries without ID
+                    projects_cache = {}
+                    for p in projects:
+                        if 'id' in p:
+                            projects_cache[str(p['id'])] = p
+                        else:
+                            logger.warning(f"Skipping malformed project entry in projects.json: {str(p)[:50]}...")
+            else:
+                logger.error(f"projects.json not found at {PROJECTS_FILE}")
         except Exception as e:
             logger.error(f"Failed to load projects file: {e}")
             return None
