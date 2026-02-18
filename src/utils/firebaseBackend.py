@@ -2649,12 +2649,13 @@ async def list_campaigns(request: Request, page: int = 1, limit: int = 10):
         # 2. Fallback to File if DB failed or returned nothing (and we expect something?)
         # Actually if DB is empty, it might just be empty. But if checks failed, use file.
         if not db_success:
-            campaigns_list = load_campaigns_from_file()
+            campaigns_list = load_campaigns_from_file() or []
             # Filter ownership
             if not is_admin:
                 campaigns_list = [c for c in campaigns_list if c.get('ownerId') == current_user]
             # Sort
-            campaigns_list.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
+            if campaigns_list:
+                campaigns_list.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
             
         # 3. Overlay Live Stats from Memory
         final_list = []
