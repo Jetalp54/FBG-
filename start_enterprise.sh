@@ -58,6 +58,15 @@ fi
 echo "🔌 Activating Virtual Environment..."
 source venv/bin/activate
 
+# 2.5 Setup Systemd Service (if needed)
+if [ -f "firebase-backend.service" ]; then
+    echo "🔧 Updating Systemd Service..."
+    # Copy service file
+    sudo cp firebase-backend.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    # Ensure it's not conflicting with our manual run, but good to have ready
+fi
+
 # 3. Install Python Dependencies
 echo "📦 Installing Enterprise Dependencies (Check setup.log)..."
 pip install -r requirements-enterprise.txt >> setup.log 2>&1
