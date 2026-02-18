@@ -25,6 +25,8 @@ firebase_apps = {}
 pyrebase_apps = {}
 projects_cache = {}
 
+import uuid
+
 # Load Projects (File Based for now, DB later)
 # Use absolute path relative to this file's directory to ensure worker finds it
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,13 +42,38 @@ def get_project_credentials(project_id):
             if os.path.exists(PROJECTS_FILE):
                 with open(PROJECTS_FILE, 'r') as f:
                     projects = json.load(f)
-                    # Robust loading: skip entries without ID
+                    
+                    # Robust loading & Auto-Repair
                     projects_cache = {}
+                    dirty = False
+                    
                     for p in projects:
-                        if 'id' in p:
-                            projects_cache[str(p['id'])] = p
-                        else:
-                            logger.warning(f"Skipping malformed project entry in projects.json: {str(p)[:50]}...")
+                        if 'id' not in p:
+                            # Attempt repair
+                            if 'service_account' in p and 'project_id' in p['service_account']:
+                                p['id'] = str(p['service_account']['project_id'])
+                                dirty = True
+                            elif 'project_id' in p:
+                                p['id'] = str(p['project_id'])
+                                dirty = True
+                            else:
+                                # Generate random ID if strictly necessary to avoid data loss
+                                # But logging warning is safer than inventing junk data
+                                p['id'] = str(uuid.uuid4())
+                                dirty = True
+                                logger.warning(f"Generated temp ID for malformed project: {p.get('name', 'unknown')}")
+                        
+                        projects_cache[str(p['id'])] = p
+
+                    # Save repairs if needed (Self-Healing)
+                    if dirty:
+                        try:
+                            with open(PROJECTS_FILE, 'w') as f_out:
+                                json.dump(projects, f_out, indent=2)
+                            logger.info("✅ Auto-repaired projects.json with missing IDs")
+                        except Exception as e:
+                            logger.error(f"Failed to save repaired projects.json: {e}")
+                            
             else:
                 logger.error(f"projects.json not found at {PROJECTS_FILE}")
         except Exception as e:
