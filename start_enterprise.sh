@@ -62,20 +62,21 @@ source venv/bin/activate
 echo "📦 Installing Enterprise Dependencies (Check setup.log)..."
 pip install -r requirements-enterprise.txt >> setup.log 2>&1
 
-# 4. Start Celery Worker (Background)
+# 4. Start Celery Worker (Background, Detached)
 echo "👷 Starting Celery Worker (100 Concurrent Threads)..."
-# Using gevent for high concurrency I/O
-# -P gevent: Asynchronous pool
-# -c 100: 100 concurrent tasks per worker process
-nohup celery -A src.utils.celery_app worker --loglevel=info -P gevent -c 100 > celery_worker.log 2>&1 &
+# < /dev/null is CRITICAL to prevent the background process from stealing terminal input
+nohup celery -A src.utils.celery_app worker --loglevel=info -P gevent -c 100 > celery_worker.log 2>&1 < /dev/null &
 CELERY_PID=$!
 echo "   -> Worker PID: $CELERY_PID"
 
-# 5. Start API Backend
+# 5. Start API Backend (Background, Detached)
 echo "🌐 Starting FastAPI Backend..."
-nohup python src/utils/firebaseBackend.py > backend.log 2>&1 &
+nohup python src/utils/firebaseBackend.py > backend.log 2>&1 < /dev/null &
 BACKEND_PID=$!
 echo "   -> Backend PID: $BACKEND_PID"
+
+# 6. Restore Terminal Settings (Just in case)
+stty sane 2>/dev/null || true
 
 echo "✅ Enterprise System Online!"
 echo "   - Logs: tail -f celery_worker.log backend.log"
