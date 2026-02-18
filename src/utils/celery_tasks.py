@@ -14,7 +14,10 @@ import asyncio
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+logger.info("✅ Celery Tasks Module Loaded (Version 2.2 - Patched for Service Account & IDs)")
+
 # Redis Connection for Progress Tracking
+REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 redis_client = redis.Redis.from_url(celery_app.conf.broker_url)
 
 # Rate Limiter Import
@@ -94,8 +97,16 @@ def initialize_firebase_for_project(project_id):
         return None, None
 
     try:
+        # Standardize keys (Backend saves camelCase, legacy might be snake_case)
+        service_account = project.get('serviceAccount') or project.get('service_account')
+        api_key = project.get('apiKey') or project.get('api_key')
+        
+        if not service_account:
+            logger.error(f"Missing service account for project {project_id}")
+            return None, None
+            
         # 1. Initialize Firebase Admin SDK
-        cred = credentials.Certificate(project['service_account'])
+        cred = credentials.Certificate(service_account)
         app_name = f"worker_{project_id}_{os.getpid()}" # Unique name per worker process
         
         try:
@@ -106,12 +117,15 @@ def initialize_firebase_for_project(project_id):
         firebase_apps[project_id] = app
 
         # 2. Initialize Pyrebase (Client SDK) for sending resets
+        # Ensure project_id is available
+        sa_project_id = service_account.get('project_id')
+        
         config = {
-            "apiKey": project['api_key'],
-            "authDomain": f"{project['service_account']['project_id']}.firebaseapp.com",
-            "databaseURL": f"https://{project['service_account']['project_id']}.firebaseio.com",
-            "storageBucket": f"{project['service_account']['project_id']}.appspot.com",
-            "serviceAccount": project['service_account']
+            "apiKey": api_key,
+            "authDomain": f"{sa_project_id}.firebaseapp.com",
+            "databaseURL": f"https://{sa_project_id}.firebaseio.com",
+            "storageBucket": f"{sa_project_id}.appspot.com",
+            "serviceAccount": service_account
         }
         pyrebase_app = pyrebase.initialize_app(config)
         pyrebase_apps[project_id] = pyrebase_app

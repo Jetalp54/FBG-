@@ -1,6 +1,13 @@
 #!/bin/bash
 echo "🚀 Starting Enterprise Firebase Manager..."
 
+# 0. Auto-Update & Repair
+echo "🔄 Checking for updates..."
+git pull origin main || echo "⚠️ Git pull failed (check for conflicts). Continuing..."
+
+echo "🔧 Running Auto-Repair for Projects..."
+python3 repair_projects.py || echo "⚠️ Repair script failed."
+
 # 1. Cleanup Old Processes (Force Kill & Stop Systemd)
 echo "🛑 Stopping Conflicting Systemd Services..."
 sudo systemctl stop firebase-manager || true
