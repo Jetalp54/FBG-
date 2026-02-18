@@ -1,7 +1,13 @@
 #!/bin/bash
 echo "🚀 Starting Enterprise Firebase Manager..."
 
-# 1. Cleanup Old Processes (Force Kill)
+# 1. Cleanup Old Processes (Force Kill & Stop Systemd)
+echo "🛑 Stopping Conflicting Systemd Services..."
+sudo systemctl stop firebase-manager || true
+sudo systemctl stop firebase-backend || true
+sudo systemctl disable firebase-manager || true
+sudo systemctl disable firebase-backend || true
+
 echo "🧹 Cleaning up old processes..."
 sudo pkill -9 -f "celery worker" || true
 sudo pkill -9 -f "firebaseBackend.py" || true
