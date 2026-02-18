@@ -1092,7 +1092,7 @@ save_buffer_lock = threading.Lock()
 last_save_time = 0
 SAVE_INTERVAL = 5 # Seconds
 
-def save_campaign_results_to_file(force=False):
+def persist_campaign_results_to_disk(force=False):
     """Save campaign results to file with buffering"""
     global last_save_time
     
@@ -1118,7 +1118,7 @@ def save_campaign_results_to_file(force=False):
 def start_auto_saver():
     while True:
         time.sleep(SAVE_INTERVAL)
-        save_campaign_results_to_file(force=True)
+        persist_campaign_results_to_disk(force=True)
 
 # Start auto-saver in a daemon thread
 saver_thread = threading.Thread(target=start_auto_saver, daemon=True)

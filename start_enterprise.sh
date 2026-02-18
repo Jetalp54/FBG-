@@ -67,6 +67,11 @@ if [ -f "firebase-backend.service" ]; then
     # Ensure it's not conflicting with our manual run, but good to have ready
 fi
 
+# 2.6 Clean Python Cache (Prevent Zombie Code)
+echo "🧹 Cleaning Python Bytecode Cache..."
+find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+find . -name "*.pyc" -delete 2>/dev/null || true
+
 # 3. Install Python Dependencies
 echo "📦 Installing Enterprise Dependencies (Check setup.log)..."
 pip install -r requirements-enterprise.txt >> setup.log 2>&1
