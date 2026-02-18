@@ -5,10 +5,10 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/path/to/your/app
-Environment=PATH=/usr/bin:/usr/local/bin
-Environment=PYTHONPATH=/path/to/your/app
-ExecStart=/usr/bin/python3 src/utils/firebaseBackend.py
+WorkingDirectory=/var/www/firebase-manager
+Environment=PATH=/var/www/firebase-manager/venv/bin:/usr/bin:/usr/local/bin
+Environment=PYTHONPATH=/var/www/firebase-manager
+ExecStart=/var/www/firebase-manager/venv/bin/python src/utils/firebaseBackend.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
