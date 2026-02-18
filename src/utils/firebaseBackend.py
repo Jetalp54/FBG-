@@ -374,6 +374,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Standardize paths for Enterprise (Absolute Paths)
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # Global storage
 firebase_apps = {}
 pyrebase_apps = {}
@@ -382,22 +385,27 @@ campaign_stats = {}
 daily_counts = {}
 campaign_results = {}  # New: Store detailed campaign results
 campaign_errors = {}   # New: Store detailed error logs
-PROJECTS_FILE = 'projects.json'
-CAMPAIGNS_FILE = 'campaigns.json'
-DAILY_COUNTS_FILE = 'daily_counts.json'
-CAMPAIGN_RESULTS_FILE = 'campaign_results.json'  # New: Campaign results persistence
+
+# ABSOLUTE PATHS for Data Persistence
+PROJECTS_FILE = os.path.join(BASE_DIR, 'projects.json')
+CAMPAIGNS_FILE = os.path.join(BASE_DIR, 'campaigns.json')
+DAILY_COUNTS_FILE = os.path.join(BASE_DIR, 'daily_counts.json')
+CAMPAIGN_RESULTS_FILE = os.path.join(BASE_DIR, 'campaign_results.json')
+AUDIT_LOG_FILE = os.path.join(BASE_DIR, 'audit.log')
+AI_KEYS_FILE = os.path.join(BASE_DIR, 'ai_keys.json')
+AI_NEGATIVE_PROMPT_FILE = os.path.join(BASE_DIR, 'ai_negative_prompt.txt')
+PROFILES_FILE = os.path.join(BASE_DIR, 'profiles.json')
+ROLE_PERMISSIONS_FILE = os.path.join(BASE_DIR, 'role_permissions.json')
+SMTP_SETTINGS_FILE = os.path.join(BASE_DIR, 'smtp_settings.json')
+PASSWORD_RESET_TOKENS_FILE = os.path.join(BASE_DIR, 'password_reset_tokens.json')
+APP_USERS_FILE = os.path.join(BASE_DIR, 'app_users.json')
+DATA_LISTS_FILE = os.path.join(BASE_DIR, 'data_lists.json')
+PROJECTS_JSON_PATH = PROJECTS_FILE # Alias just in case
+
 projects = {}
-AUDIT_LOG_FILE = 'audit.log'
-AI_KEYS_FILE = 'ai_keys.json'
 ai_keys = {}
-AI_NEGATIVE_PROMPT_FILE = 'ai_negative_prompt.txt'
-PROFILES_FILE = 'profiles.json'
-ROLE_PERMISSIONS_FILE = 'role_permissions.json'
-SMTP_SETTINGS_FILE = 'smtp_settings.json'
-PASSWORD_RESET_TOKENS_FILE = 'password_reset_tokens.json'
-APP_USERS_FILE = 'app_users.json'
-DATA_LISTS_FILE = 'data_lists.json'  # New: Email list storage with metadata
-data_lists = {}  # New: In-memory data lists storage
+data_lists = {}
+
 
 # Admin service account for Google Cloud operations
 ADMIN_SERVICE_ACCOUNT_FILE = 'admin_service_account.json'
@@ -996,8 +1004,16 @@ def reset_password(request: dict):
 
 def save_projects_to_file():
     try:
+        # Create list of projects with ID injected (Critical for Celery Worker)
+        project_list = []
+        for p_id, p_data in projects.items():
+            p_copy = p_data.copy()
+            if 'id' not in p_copy:
+                 p_copy['id'] = p_id
+            project_list.append(p_copy)
+            
         with open(PROJECTS_FILE, 'w') as f:
-            json.dump(list(projects.values()), f, indent=2)
+            json.dump(project_list, f, indent=2)
     except Exception as e:
         logger.error(f"Error saving projects: {str(e)}")
 
