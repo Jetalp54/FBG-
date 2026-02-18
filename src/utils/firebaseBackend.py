@@ -13,6 +13,7 @@ import pyrebase
 import hashlib
 import json
 import os
+import shutil
 import asyncio
 import time
 from datetime import datetime, date, timedelta, timezone
@@ -1047,21 +1048,51 @@ def load_projects_from_file():
 
 def save_campaigns_to_file():
     try:
-        with open(CAMPAIGNS_FILE, 'w') as f:
+        # Create backup before overwrite
+        if os.path.exists(CAMPAIGNS_FILE):
+             try:
+                 shutil.copy2(CAMPAIGNS_FILE, f"{CAMPAIGNS_FILE}.bak")
+             except:
+                 pass
+        
+        # Atomic write
+        temp_file = f"{CAMPAIGNS_FILE}.tmp"
+        with open(temp_file, 'w') as f:
             json.dump(list(active_campaigns.values()), f, indent=2)
+        os.replace(temp_file, CAMPAIGNS_FILE)
     except Exception as e:
         logger.error(f"Error saving campaigns: {str(e)}")
 
 def load_campaigns_from_file():
-    if not os.path.exists(CAMPAIGNS_FILE):
-        return
+    target_file = CAMPAIGNS_FILE
+    
+    # Auto-Recovery Logic
+    if not os.path.exists(target_file) or os.path.getsize(target_file) < 5:
+        logger.warning(f"Main campaigns file missing or empty. Checking backup...")
+        if os.path.exists(f"{CAMPAIGNS_FILE}.bak"):
+             logger.info(f"✅ Recovering campaigns from backup: {CAMPAIGNS_FILE}.bak")
+             shutil.copy2(f"{CAMPAIGNS_FILE}.bak", target_file)
+        else:
+             return # No backup, start fresh
+
     try:
-        with open(CAMPAIGNS_FILE, 'r') as f:
+        with open(target_file, 'r') as f:
             loaded = json.load(f)
             for campaign in loaded:
                 active_campaigns[campaign['id']] = campaign
+            logger.info(f"Loaded {len(active_campaigns)} campaigns from file.")
     except Exception as e:
         logger.error(f"Error loading campaigns: {str(e)}")
+        # Try backup as last resort if JSON is corrupt
+        try:
+            if os.path.exists(f"{CAMPAIGNS_FILE}.bak"):
+                 logger.warning("JSON Corrupt. Attempting backup restore...")
+                 with open(f"{CAMPAIGNS_FILE}.bak", 'r') as f_bak:
+                     loaded = json.load(f_bak)
+                     for campaign in loaded:
+                        active_campaigns[campaign['id']] = campaign
+        except:
+             pass
 
 def save_daily_counts():
     try:
