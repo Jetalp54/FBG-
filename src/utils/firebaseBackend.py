@@ -4595,23 +4595,30 @@ def get_profiles(request: Request):
 
 @app.post('/profiles')
 def add_profile(profile: dict, request: Request):
-    current_user = get_current_user_from_request(request)
-    profiles = load_profiles_from_file()
-    
-    # Always assign a unique id and createdAt if not present
-    if 'id' not in profile or not profile['id']:
-        profile['id'] = str(int(time.time() * 1000))
-    if 'createdAt' not in profile:
-        profile['createdAt'] = datetime.utcnow().isoformat() + 'Z'
-    if 'projectIds' not in profile:
-        profile['projectIds'] = []
-    
-    # Set ownership to current user
-    profile['ownerId'] = current_user
-    
-    profiles.append(profile)
-    save_profiles_to_file(profiles)
-    return {"success": True, "profile": profile}
+    try:
+        current_user = get_current_user_from_request(request)
+        profiles = load_profiles_from_file()
+        
+        # Always assign a unique id and createdAt if not present
+        if 'id' not in profile or not profile['id']:
+            profile['id'] = str(int(time.time() * 1000))
+        if 'createdAt' not in profile:
+            profile['createdAt'] = datetime.utcnow().isoformat() + 'Z'
+        if 'projectIds' not in profile:
+            profile['projectIds'] = []
+        
+        # Set ownership to current user
+        profile['ownerId'] = current_user
+        
+        profiles.append(profile)
+        save_profiles_to_file(profiles)
+        logger.info(f"✅ Profile added: {profile['id']} by {current_user}")
+        return {"success": True, "profile": profile}
+    except Exception as e:
+        logger.error(f"❌ CRASH in add_profile: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.put('/profiles/{profile_id}')
 def update_profile(profile_id: str, updates: dict, request: Request):
