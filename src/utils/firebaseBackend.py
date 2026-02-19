@@ -3289,7 +3289,7 @@ async def send_campaign(request: Request):
                 logger.debug(f"[{proj_id}] send err {email}: {ex}")
                 return False
 
-        # ── Build project metadata + resolve emails in parallel ──────────
+        # ── Build project list + resolve emails in parallel ──────────────
         loop = asyncio.get_event_loop()
         proj_meta = {}
         for proj in projects_raw:
@@ -3297,23 +3297,23 @@ async def send_campaign(request: Request):
             u_ids = proj.get("userIds", [])
             if not u_ids or not p_id:
                 continue
-            info = projects.get(p_id) or {}
-            api_key = (info.get("apiKey") or info.get("api_key") or
-                       proj.get("apiKey") or proj.get("api_key") or "")
-            proj_meta[p_id] = {"api_key": api_key, "uid_list": u_ids}
+            # Get pyrebase auth client (has correct API key already embedded)
+            pb_app = pyrebase_apps.get(p_id)
+            auth_client = pb_app.auth() if pb_app else None
+            proj_meta[p_id] = {"auth_client": auth_client, "uid_list": u_ids}
 
         if not proj_meta:
-            return {"success": False, "error": "No valid projects found"}
+            return {"success": False, "error": "No valid projects found (not initialized)"}
 
-        # Resolve UIDs for all projects concurrently
-        resolve_coros = {
+        # Resolve UIDs → emails for all projects concurrently
+        resolve_tasks = {
             p_id: loop.run_in_executor(None, _resolve, p_id, meta["uid_list"])
             for p_id, meta in proj_meta.items()
         }
         resolved = {}
-        for p_id, coro in resolve_coros.items():
+        for p_id, coro in resolve_tasks.items():
             uid_email = await coro
-            resolved[p_id] = [(uid, email) for uid, email in uid_email.items()]
+            resolved[p_id] = [(uid, em) for uid, em in uid_email.items()]
             unresolved = len(proj_meta[p_id]["uid_list"]) - len(resolved[p_id])
             if unresolved:
                 _flush(p_id, 0, unresolved)
@@ -3321,17 +3321,32 @@ async def send_campaign(request: Request):
 
         total_users = sum(len(v) for v in resolved.values())
         if total_users == 0:
-            return {"success": False, "error": "No emails resolved from UIDs"}
+            return {"success": False, "error": "No emails could be resolved from UIDs"}
 
         # ==================================================================
-        # TURBO: all emails for all projects fired simultaneously
+        # TURBO — Maximum Speed
+        # Uses ThreadPoolExecutor(500) + asyncio.gather to fire ALL emails
+        # across ALL projects simultaneously. Each thread uses the already-
+        # authenticated pyrebase auth_client (correct API key, no setup needed).
         # ==================================================================
         if sending_mode == "turbo":
-            logger.info(f"🚀 [TURBO] {total_users} emails → all concurrent")
-            sem = asyncio.Semaphore(300)
-            stats = {p: [0, 0] for p in resolved}  # [ok, fail]
+            from concurrent.futures import ThreadPoolExecutor
+            max_workers = min(total_users + 10, 500)  # cap at 500 threads
+            logger.info(f"🚀 [TURBO v6] {total_users} emails | {len(resolved)} project(s) | {max_workers} threads")
 
-            async def _do_turbo(proj_id, uid, email, api_key, session):
+            stats = {p: {"ok": 0, "fail": 0} for p in resolved}
+            executor = ThreadPoolExecutor(max_workers=max_workers)
+
+            def _sync_send(auth_client, email):
+                """Blocking Firebase send — runs in a thread."""
+                try:
+                    auth_client.send_password_reset_email(email)
+                    return True
+                except Exception as ex:
+                    return False
+
+            async def _turbo_one(proj_id, email, auth_client):
+                # Check pause/stop before sending
                 sig = _ctrl()
                 if sig == "stop":
                     return
@@ -3340,28 +3355,35 @@ async def send_campaign(request: Request):
                     sig = _ctrl()
                 if sig == "stop":
                     return
-                async with sem:
-                    ok = await _send_one(session, api_key, email, proj_id)
-                s = stats[proj_id]
+                # Run blocking send in thread pool
+                ok = await loop.run_in_executor(executor, _sync_send, auth_client, email)
                 if ok:
-                    s[0] += 1
+                    stats[proj_id]["ok"] += 1
                 else:
-                    s[1] += 1
-                if (s[0]+s[1]) % 25 == 0:
-                    _flush(proj_id, s[0], s[1])
-                    stats[proj_id] = [0, 0]
+                    stats[proj_id]["fail"] += 1
+                # Flush every 50 completions
+                total = stats[proj_id]["ok"] + stats[proj_id]["fail"]
+                if total % 50 == 0:
+                    _flush(proj_id, stats[proj_id]["ok"], stats[proj_id]["fail"])
+                    stats[proj_id] = {"ok": 0, "fail": 0}
 
-            connector = aiohttp.TCPConnector(limit=300, limit_per_host=100)
-            async with aiohttp.ClientSession(connector=connector) as session:
-                coros = []
-                for p_id, pairs in resolved.items():
-                    api_key = proj_meta[p_id]["api_key"]
-                    for uid, email in pairs:
-                        coros.append(_do_turbo(p_id, uid, email, api_key, session))
-                await asyncio.gather(*coros, return_exceptions=True)
+            # Build all coroutines — ALL emails from ALL projects at once
+            all_coros = []
+            for p_id, pairs in resolved.items():
+                auth_c = proj_meta[p_id]["auth_client"]
+                if not auth_c:
+                    _flush(p_id, 0, len(pairs))
+                    logger.warning(f"[{p_id}] No auth client — project not initialized")
+                    continue
+                for uid, em in pairs:
+                    all_coros.append(_turbo_one(p_id, em, auth_c))
 
+            await asyncio.gather(*all_coros, return_exceptions=True)
+            executor.shutdown(wait=False)
+
+            # Flush any remaining stats
             for p_id in stats:
-                _flush(p_id, stats[p_id][0], stats[p_id][1])
+                _flush(p_id, stats[p_id]["ok"], stats[p_id]["fail"])
 
             grand_ok   = sum(int(_r.hget(f"campaign:{campaign_id}:{p}:stats", "successful") or 0) for p in resolved)
             grand_fail = sum(int(_r.hget(f"campaign:{campaign_id}:{p}:stats", "failed")     or 0) for p in resolved)
@@ -3369,27 +3391,39 @@ async def send_campaign(request: Request):
             if campaign_id in active_campaigns:
                 active_campaigns[campaign_id].update({
                     "status": "completed", "processed": total_users,
-                    "successful": grand_ok, "failed": grand_fail,
+                    "successful": int(grand_ok), "failed": int(grand_fail),
                     "completedAt": datetime.now().isoformat()
                 })
                 save_campaigns_to_file()
 
+            logger.info(f"✅ [TURBO] Done: {grand_ok} sent, {grand_fail} failed / {total_users} total")
             return {
                 "success": True, "mode": "turbo", "campaignId": campaign_id,
-                "total": total_users, "successful": grand_ok, "failed": grand_fail,
-                "message": f"Turbo done: {grand_ok} sent, {grand_fail} failed out of {total_users}"
+                "total": total_users, "successful": int(grand_ok), "failed": int(grand_fail),
+                "message": f"Turbo done: {grand_ok}/{total_users} sent"
             }
 
         # ==================================================================
-        # THROTTLED: each project runs concurrently, ms delay between emails
+        # THROTTLED — ms-precision, projects run in parallel
+        # Each project's emails are sent sequentially with asyncio.sleep(delay_s)
+        # between each. Uses pyrebase in executor (same as turbo).
         # ==================================================================
         elif sending_mode == "throttled":
+            from concurrent.futures import ThreadPoolExecutor
             delay_s = delay_ms / 1000.0 if delay_ms > 0 else 0.01
-            logger.info(f"⚙️ [THROTTLE] {1.0/delay_s:.1f} emails/sec (delay={delay_ms}ms) | {len(resolved)} project(s) in parallel")
+            logger.info(f"⚙️ [THROTTLE] {1.0/delay_s:.1f} emails/sec (delay={delay_ms}ms) | {len(resolved)} project(s) parallel")
+            executor = ThreadPoolExecutor(max_workers=len(resolved) * 2 + 4)
 
-            async def _throttle_project(proj_id, pairs, api_key, session):
+            def _sync_send_th(auth_client, email):
+                try:
+                    auth_client.send_password_reset_email(email)
+                    return True
+                except Exception:
+                    return False
+
+            async def _throttle_project(proj_id, pairs, auth_client):
                 ok = fail = 0
-                for uid, email in pairs:
+                for uid, em in pairs:
                     sig = _ctrl()
                     if sig == "stop":
                         break
@@ -3398,7 +3432,7 @@ async def send_campaign(request: Request):
                         sig = _ctrl()
                     if sig == "stop":
                         break
-                    sent = await _send_one(session, api_key, email, proj_id)
+                    sent = await loop.run_in_executor(executor, _sync_send_th, auth_client, em)
                     if sent:
                         ok += 1
                     else:
@@ -3410,12 +3444,12 @@ async def send_campaign(request: Request):
                 if ok or fail:
                     _flush(proj_id, ok, fail)
 
-            connector = aiohttp.TCPConnector(limit=50)
-            async with aiohttp.ClientSession(connector=connector) as session:
-                await asyncio.gather(*[
-                    _throttle_project(p_id, pairs, proj_meta[p_id]["api_key"], session)
-                    for p_id, pairs in resolved.items()
-                ], return_exceptions=True)
+            await asyncio.gather(*[
+                _throttle_project(p_id, pairs, proj_meta[p_id]["auth_client"])
+                for p_id, pairs in resolved.items()
+                if proj_meta[p_id]["auth_client"]
+            ], return_exceptions=True)
+            executor.shutdown(wait=False)
 
             if campaign_id in active_campaigns:
                 active_campaigns[campaign_id]["status"] = "completed"
@@ -3482,6 +3516,19 @@ async def send_campaign(request: Request):
     except Exception as e:
         logger.error(f"send_campaign failed: {e}")
         return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+# CAMPAIGN CONTROL — Redis client for pause/stop/resume signals
+# ============================================================================
+_campaign_ctrl_redis = None
+
+def _get_ctrl_redis():
+    global _campaign_ctrl_redis
+    if _campaign_ctrl_redis is None:
+        redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+        _campaign_ctrl_redis = redis.Redis.from_url(redis_url, decode_responses=True)
+    return _campaign_ctrl_redis
 
 
 @app.post("/campaigns/{campaign_id}/pause")
