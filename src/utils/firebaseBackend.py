@@ -3509,6 +3509,12 @@ async def send_campaign(request: Request):
         return {"success": False, "error": str(e)}
 
 
+
+def _get_ctrl_redis():
+    """Helper to get Redis connection for control signals"""
+    import redis as redis_lib
+    return redis_lib.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'))
+
 @app.post("/campaigns/{campaign_id}/pause")
 async def pause_campaign(campaign_id: str, request: Request):
     """Pause a running campaign — Celery workers will stop and wait."""
