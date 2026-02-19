@@ -2663,6 +2663,16 @@ async def list_campaigns(request: Request, page: int = 1, limit: int = 10):
         return {
             "campaigns":    paginated,
             "total":        total_campaigns,
+            "total_pages":  total_pages,
+            "page":         page,
+            "limit":        limit
+        }
+
+    except Exception as e:
+        logger.error(f"List campaigns error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/campaigns/{campaign_id}")
 async def get_campaign(campaign_id: str):
     """Get campaign details - merges Redis live stats from Celery worker"""
