@@ -2708,10 +2708,64 @@ async def list_campaigns(request: Request, page: int = 1, limit: int = 10):
 
 @app.get("/campaigns/{campaign_id}")
 async def get_campaign(campaign_id: str):
-    """Get campaign details"""
+    """Get campaign details - merges Redis live stats from Celery worker"""
     if campaign_id not in active_campaigns:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    return active_campaigns[campaign_id]
+    
+    campaign = dict(active_campaigns[campaign_id])  # copy to avoid mutation
+    
+    # Read live stats from Redis (written by Celery worker)
+    try:
+        import redis as redis_lib
+        r = redis_lib.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'))
+        
+        # Aggregate stats across all projects
+        total_processed = 0
+        total_successful = 0
+        total_failed = 0
+        
+        project_ids = campaign.get('projectIds', [])
+        for pid in project_ids:
+            stats_key = f"campaign:{campaign_id}:{pid}:stats"
+            stats = r.hgetall(stats_key)
+            if stats:
+                total_processed += int(stats.get(b'processed', 0))
+                total_successful += int(stats.get(b'successful', 0))
+                total_failed += int(stats.get(b'failed', 0))
+        
+        # Also check global stats key
+        global_key = f"campaign:{campaign_id}:stats"
+        global_stats = r.hgetall(global_key)
+        if global_stats and not project_ids:
+            total_processed += int(global_stats.get(b'processed', 0))
+            total_successful += int(global_stats.get(b'successful', 0))
+            total_failed += int(global_stats.get(b'failed', 0))
+        
+        if total_processed > 0 or total_successful > 0 or total_failed > 0:
+            campaign['processed'] = total_processed
+            campaign['successful'] = total_successful
+            campaign['failed'] = total_failed
+            
+            # Update active_campaigns in memory so file saves are correct
+            active_campaigns[campaign_id]['processed'] = total_processed
+            active_campaigns[campaign_id]['successful'] = total_successful
+            active_campaigns[campaign_id]['failed'] = total_failed
+            
+            # Determine if still running or completed
+            total_expected = sum(
+                len(campaign.get('selectedUsers', {}).get(pid, []))
+                for pid in project_ids
+            ) or campaign.get('totalUsers', 0)
+            
+            if total_expected > 0 and total_processed >= total_expected:
+                if campaign.get('status') == 'running':
+                    active_campaigns[campaign_id]['status'] = 'completed'
+                    campaign['status'] = 'completed'
+                    save_campaigns_to_file()
+    except Exception as redis_err:
+        logger.warning(f"Could not read Redis stats for campaign {campaign_id}: {redis_err}")
+    
+    return campaign
 
 @app.put("/campaigns/{campaign_id}")
 async def update_campaign(campaign_id: str, campaign_update: CampaignUpdate):
@@ -2820,26 +2874,86 @@ async def start_campaign(campaign_id: str):
                 response = await send_campaign(FakeRequest())
                 logger.info(f"Background execution response: {response}")
                 
-                # Determine final status based on response
-                final_status = 'completed'
                 error_message = None
                 
                 if not response.get('success'):
                     final_status = 'failed'
                     error_message = response.get('error', 'Unknown error during sending')
                     logger.error(f"Campaign execution failed: {error_message}")
-                elif response.get('mode') == 'scheduled':
+                    if campaign_id in active_campaigns:
+                        active_campaigns[campaign_id]['status'] = final_status
+                        active_campaigns[campaign_id]['errors'].append(error_message)
+                        save_campaigns_to_file()
+                    return
+                
+                # For enterprise turbo/throttle modes, Celery workers run ASYNC.
+                # We must NOT mark as complete immediately - poll Redis until done.
+                turbo_modes = ('enterprise_turbo', 'enterprise_throttle')
+                if response.get('mode') in turbo_modes:
+                    logger.info(f"🔄 Celery dispatched for campaign {campaign_id} - polling Redis for completion...")
+                    total_users = sum(len(p.get('userIds', [])) for p in projects_payload)
+                    if not total_users:
+                        total_users = 1  # avoid div by zero
+                    
+                    import redis as redis_lib
+                    try:
+                        r = redis_lib.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'))
+                        max_wait = 600  # 10 minutes max poll
+                        elapsed = 0
+                        while elapsed < max_wait:
+                            await asyncio.sleep(3)
+                            elapsed += 3
+                            
+                            # Read per-project stats
+                            total_processed = 0
+                            total_successful = 0
+                            total_failed = 0
+                            
+                            for p in projects_payload:
+                                pid = p.get('projectId')
+                                stats_key = f"campaign:{campaign_id}:{pid}:stats"
+                                stats = r.hgetall(stats_key)
+                                if stats:
+                                    total_processed += int(stats.get(b'processed', 0))
+                                    total_successful += int(stats.get(b'successful', 0))
+                                    total_failed += int(stats.get(b'failed', 0))
+                            
+                            if campaign_id in active_campaigns:
+                                active_campaigns[campaign_id]['processed'] = total_processed
+                                active_campaigns[campaign_id]['successful'] = total_successful
+                                active_campaigns[campaign_id]['failed'] = total_failed
+                            
+                            logger.info(f"📊 Campaign {campaign_id}: {total_processed}/{total_users} processed, {total_successful} OK, {total_failed} failed")
+                            
+                            if total_processed >= total_users:
+                                logger.info(f"✅ Campaign {campaign_id} fully processed by Celery workers!")
+                                break
+                        else:
+                            logger.warning(f"⏰ Campaign {campaign_id} polling timeout after {max_wait}s")
+                    except Exception as redis_err:
+                        logger.error(f"Redis polling error for campaign {campaign_id}: {redis_err}")
+                    
+                    # Mark completed regardless (timeout or done)
+                    if campaign_id in active_campaigns:
+                        if active_campaigns[campaign_id].get('status') == 'running':
+                            active_campaigns[campaign_id]['status'] = 'completed'
+                            active_campaigns[campaign_id]['completedAt'] = datetime.now().isoformat()
+                            save_campaigns_to_file()
+                            logger.info(f"Updated campaign {campaign_id} status to completed")
+                    return
+                
+                # Synchronous final_status for non-celery modes
+                if response.get('mode') == 'scheduled':
                     final_status = 'scheduled'
+                else:
+                    final_status = 'completed'
                 
                 # Update campaign status
                 if campaign_id in active_campaigns:
-                    # Check if status is still 'running' (prevent race conditions if user paused/cancelled)
                     if active_campaigns[campaign_id]['status'] == 'running':
                         active_campaigns[campaign_id]['status'] = final_status
                         if final_status == 'completed':
                             active_campaigns[campaign_id]['completedAt'] = datetime.now().isoformat()
-                        if error_message:
-                            active_campaigns[campaign_id]['errors'].append(error_message)
                         
                         save_campaigns_to_file()
                         logger.info(f"Updated campaign {campaign_id} status to {final_status}")

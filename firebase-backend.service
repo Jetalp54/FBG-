@@ -1,18 +1,17 @@
 [Unit]
-Description=Firebase Email Campaign Backend
-After=network.target
+Description=Firebase Campaign Manager Backend
+After=network.target redis.service
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/var/www/firebase-manager
-Environment=PATH=/var/www/firebase-manager/venv/bin:/usr/bin:/usr/local/bin
-Environment=PYTHONPATH=/var/www/firebase-manager
-ExecStart=/var/www/firebase-manager/venv/bin/python src/utils/firebaseBackend.py
+ExecStart=/var/www/firebase-manager/venv/bin/python3 src/utils/firebaseBackend.py
 Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=append:/var/log/firebase-backend.log
+StandardError=append:/var/log/firebase-backend.log
 
 [Install]
-WantedBy=multi-user.target 
+WantedBy=multi-user.target

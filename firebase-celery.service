@@ -1,0 +1,17 @@
+[Unit]
+Description=Firebase Campaign Manager Celery Worker
+After=network.target redis.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/firebase-manager
+ExecStart=/var/www/firebase-manager/venv/bin/celery -A src.utils.celery_app worker --loglevel=info -P gevent -c 100
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=append:/var/log/firebase-celery.log
+StandardError=append:/var/log/firebase-celery.log
+
+[Install]
+WantedBy=multi-user.target
