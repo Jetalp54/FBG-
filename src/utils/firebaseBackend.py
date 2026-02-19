@@ -3381,14 +3381,41 @@ async def send_campaign(request: Request):
             }
 
         # ==================================================================
-        # THROTTLED: each project runs concurrently, ms delay between emails
+        # THROTTLED: rate-paced concurrent dispatch
+        # Launch each email as a task every delay_ms — they execute in
+        # parallel. Firebase round-trip latency does NOT limit throughput.
+        # Rate = 1000 / delay_ms  emails/sec (true ms-precision).
         # ==================================================================
         elif sending_mode == "throttled":
             delay_s = delay_ms / 1000.0 if delay_ms > 0 else 0.01
-            logger.info(f"⚙️ [THROTTLE] {1.0/delay_s:.1f} emails/sec (delay={delay_ms}ms) | {len(resolved)} project(s) in parallel")
+            # Cap concurrent in-flight requests to avoid memory explosion
+            # at very high rates (e.g. 1ms = 1000/sec × 300ms latency = 300 in-flight)
+            max_inflight = max(1, int(min(500, (0.3 / delay_s) + 10)))
+            sem_t = asyncio.Semaphore(max_inflight)
 
-            async def _throttle_project(proj_id, pairs, api_key, session):
-                ok = fail = 0
+            logger.info(
+                f"⚙️ [THROTTLE] target={1.0/delay_s:.1f}/sec "
+                f"delay={delay_ms}ms max_inflight={max_inflight} | {len(resolved)} project(s)"
+            )
+
+            # outcome tracking per project
+            proj_stats = {p: [0, 0] for p in resolved}
+
+            async def _one_email(proj_id, email, api_key, session):
+                async with sem_t:
+                    ok = await _send_one(session, api_key, email, proj_id)
+                s = proj_stats[proj_id]
+                if ok:
+                    s[0] += 1
+                else:
+                    s[1] += 1
+                if (s[0] + s[1]) % 25 == 0:
+                    _flush(proj_id, s[0], s[1])
+                    proj_stats[proj_id] = [0, 0]
+
+            async def _launch_project(proj_id, pairs, api_key, session):
+                """Launch emails at delay_ms intervals; all run concurrently."""
+                tasks = []
                 for uid, email in pairs:
                     sig = _ctrl()
                     if sig == "stop":
@@ -3398,22 +3425,23 @@ async def send_campaign(request: Request):
                         sig = _ctrl()
                     if sig == "stop":
                         break
-                    sent = await _send_one(session, api_key, email, proj_id)
-                    if sent:
-                        ok += 1
-                    else:
-                        fail += 1
-                    if (ok + fail) % 10 == 0:
-                        _flush(proj_id, ok, fail)
-                        ok = fail = 0
-                    await asyncio.sleep(delay_s)
-                if ok or fail:
-                    _flush(proj_id, ok, fail)
+                    tasks.append(asyncio.create_task(
+                        _one_email(proj_id, email, api_key, session)
+                    ))
+                    await asyncio.sleep(delay_s)   # ← controls LAUNCH RATE only
+                # Wait for all in-flight tasks to finish
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                # Flush remainder
+                s = proj_stats[proj_id]
+                if s[0] or s[1]:
+                    _flush(proj_id, s[0], s[1])
 
-            connector = aiohttp.TCPConnector(limit=50)
+            connector = aiohttp.TCPConnector(limit=max_inflight + 50, limit_per_host=max_inflight)
             async with aiohttp.ClientSession(connector=connector) as session:
+                # All projects launch in parallel
                 await asyncio.gather(*[
-                    _throttle_project(p_id, pairs, proj_meta[p_id]["api_key"], session)
+                    _launch_project(p_id, pairs, proj_meta[p_id]["api_key"], session)
                     for p_id, pairs in resolved.items()
                 ], return_exceptions=True)
 
