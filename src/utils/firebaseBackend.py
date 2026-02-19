@@ -3247,146 +3247,180 @@ async def send_campaign(request: Request):
             pipe.expire(key, 86400)
             pipe.execute()
 
-        # ── UID → email resolution (sync, in thread executor) ────────────
-        def _resolve(proj_id, uid_list):
-            app_obj = firebase_apps.get(proj_id)
-            if not app_obj:
-                logger.warning(f"[{proj_id}] No firebase app initialised")
-                return {}
-            result = {}
-            for i in range(0, len(uid_list), 100):
-                chunk = uid_list[i:i+100]
-                try:
-                    ids = [auth.UidIdentifier(u) for u in chunk]
-                    res = auth.get_users(ids, app=app_obj)
-                    for u in res.users:
-                        if u.email:
-                            result[u.uid] = u.email
-                except Exception as ex:
-                    logger.warning(f"[{proj_id}] batch lookup err: {ex}")
-                    for uid in chunk:
-                        try:
-                            u = auth.get_user(uid, app=app_obj)
-                            if u.email:
-                                result[u.uid] = u.email
-                        except Exception:
-                            pass
-            return result
-
-        # ── Async REST sender (no pyrebase, fully async) ─────────────────
-        async def _send_one(session, api_key, email, proj_id):
-            url = (
-                "https://identitytoolkit.googleapis.com/v1/"
-                f"accounts:sendOobCode?key={api_key}"
-            )
-            try:
-                async with session.post(
-                    url, json={"requestType": "PASSWORD_RESET", "email": email},
-                    timeout=aiohttp.ClientTimeout(total=15)
-                ) as resp:
-                    return resp.status == 200
-            except Exception as ex:
-                logger.debug(f"[{proj_id}] send err {email}: {ex}")
-                return False
-
-        # ── Build project list + resolve emails in parallel ──────────────
-        loop = asyncio.get_event_loop()
+        # ── Build project metadata ────────────────────────────────────────
         proj_meta = {}
         for proj in projects_raw:
             p_id = str(proj.get("projectId", ""))
             u_ids = proj.get("userIds", [])
             if not u_ids or not p_id:
                 continue
-            # Get pyrebase auth client (has correct API key already embedded)
             pb_app = pyrebase_apps.get(p_id)
             auth_client = pb_app.auth() if pb_app else None
-            proj_meta[p_id] = {"auth_client": auth_client, "uid_list": u_ids}
+            admin_app   = firebase_apps.get(p_id)
+            proj_meta[p_id] = {
+                "auth_client": auth_client,
+                "admin_app":   admin_app,
+                "uid_list":    u_ids,
+            }
 
         if not proj_meta:
             return {"success": False, "error": "No valid projects found (not initialized)"}
 
-        # Resolve UIDs → emails for all projects concurrently
-        resolve_tasks = {
-            p_id: loop.run_in_executor(None, _resolve, p_id, meta["uid_list"])
-            for p_id, meta in proj_meta.items()
-        }
-        resolved = {}
-        for p_id, coro in resolve_tasks.items():
-            uid_email = await coro
-            resolved[p_id] = [(uid, em) for uid, em in uid_email.items()]
-            unresolved = len(proj_meta[p_id]["uid_list"]) - len(resolved[p_id])
-            if unresolved:
-                _flush(p_id, 0, unresolved)
-            logger.info(f"[{p_id}] Resolved {len(resolved[p_id])}/{len(proj_meta[p_id]['uid_list'])} emails")
+        total_users = sum(len(m["uid_list"]) for m in proj_meta.values())
+        logger.info(f"📋 {total_users} total UIDs across {len(proj_meta)} project(s)")
 
-        total_users = sum(len(v) for v in resolved.values())
-        if total_users == 0:
-            return {"success": False, "error": "No emails could be resolved from UIDs"}
+        loop = asyncio.get_event_loop()
+
+        # ── Sync: resolve one 100-UID chunk → list[(uid, email)] ─────────
+        def _resolve_chunk(p_id, chunk, admin_app):
+            result = []
+            try:
+                ids = [auth.UidIdentifier(u) for u in chunk]
+                res = auth.get_users(ids, app=admin_app)
+                for u in res.users:
+                    if u.email:
+                        result.append((u.uid, u.email))
+            except Exception as ex:
+                logger.warning(f"[{p_id}] chunk resolve err: {ex}")
+                for uid in chunk:
+                    try:
+                        u = auth.get_user(uid, app=admin_app)
+                        if u.email:
+                            result.append((u.uid, u.email))
+                    except Exception:
+                        pass
+            return result
+
+        # ── Sync: fire password-reset email via pyrebase ──────────────────
+        def _sync_send(auth_client, email):
+            try:
+                auth_client.send_password_reset_email(email)
+                return True
+            except Exception:
+                return False
 
         # ==================================================================
-        # TURBO — Maximum Speed
-        # Uses ThreadPoolExecutor(500) + asyncio.gather to fire ALL emails
-        # across ALL projects simultaneously. Each thread uses the already-
-        # authenticated pyrebase auth_client (correct API key, no setup needed).
+        # TURBO v7 — STREAMING PRODUCER-CONSUMER
+        # Each project resolves UIDs in chunks of 100 (producers).
+        # Emails are enqueued the moment a chunk resolves — no waiting for
+        # full resolution. Consumer workers send immediately from the queue.
+        # ALL projects produce concurrently — zero delay between projects.
         # ==================================================================
-        if sending_mode == "turbo":
+        if sending_mode in ("turbo", "enterprise_turbo"):
             from concurrent.futures import ThreadPoolExecutor
-            max_workers = min(total_users + 10, 500)  # cap at 500 threads
-            logger.info(f"🚀 [TURBO v6] {total_users} emails | {len(resolved)} project(s) | {max_workers} threads")
 
-            stats = {p: {"ok": 0, "fail": 0} for p in resolved}
-            executor = ThreadPoolExecutor(max_workers=max_workers)
+            CHUNK_SIZE    = 100   # UIDs per resolve call
+            MAX_CONSUMERS = 500   # max concurrent email senders
 
-            def _sync_send(auth_client, email):
-                """Blocking Firebase send — runs in a thread."""
-                try:
-                    auth_client.send_password_reset_email(email)
-                    return True
-                except Exception as ex:
-                    return False
+            n_consumers = min(total_users, MAX_CONSUMERS)
+            executor    = ThreadPoolExecutor(max_workers=n_consumers + len(proj_meta) * 2)
 
-            async def _turbo_one(proj_id, email, auth_client):
-                # Check pause/stop before sending
-                sig = _ctrl()
-                if sig == "stop":
+            # asyncio queue: None = sentinel (one per consumer)
+            q = asyncio.Queue(maxsize=n_consumers * 2)
+
+            # per-project stats (thread-safe enough for async context)
+            stats = {p: {"ok": 0, "fail": 0, "done": False} for p in proj_meta}
+
+            logger.info(
+                f"🚀 [TURBO v7] {total_users} emails | {len(proj_meta)} project(s) "
+                f"| {n_consumers} consumers | streaming"
+            )
+
+            # ── PRODUCER: resolve chunk-by-chunk, enqueue immediately ─────
+            async def producer(p_id, meta):
+                uid_list   = meta["uid_list"]
+                admin_app  = meta["admin_app"]
+                auth_c     = meta["auth_client"]
+                if not admin_app or not auth_c:
+                    logger.warning(f"[{p_id}] skipped — not initialised")
+                    _flush(p_id, 0, len(uid_list))
+                    stats[p_id]["done"] = True
                     return
-                while sig == "pause":
-                    await asyncio.sleep(0.5)
-                    sig = _ctrl()
-                if sig == "stop":
-                    return
-                # Run blocking send in thread pool
-                ok = await loop.run_in_executor(executor, _sync_send, auth_client, email)
-                if ok:
-                    stats[proj_id]["ok"] += 1
-                else:
-                    stats[proj_id]["fail"] += 1
-                # Flush every 50 completions
-                total = stats[proj_id]["ok"] + stats[proj_id]["fail"]
-                if total % 50 == 0:
-                    _flush(proj_id, stats[proj_id]["ok"], stats[proj_id]["fail"])
-                    stats[proj_id] = {"ok": 0, "fail": 0}
 
-            # Build all coroutines — ALL emails from ALL projects at once
-            all_coros = []
-            for p_id, pairs in resolved.items():
-                auth_c = proj_meta[p_id]["auth_client"]
-                if not auth_c:
-                    _flush(p_id, 0, len(pairs))
-                    logger.warning(f"[{p_id}] No auth client — project not initialized")
-                    continue
-                for uid, em in pairs:
-                    all_coros.append(_turbo_one(p_id, em, auth_c))
+                for i in range(0, len(uid_list), CHUNK_SIZE):
+                    chunk = uid_list[i:i+CHUNK_SIZE]
+                    # Resolve chunk in thread (blocking Firebase Admin call)
+                    pairs = await loop.run_in_executor(
+                        executor, _resolve_chunk, p_id, chunk, admin_app
+                    )
+                    unresolved = len(chunk) - len(pairs)
+                    if unresolved:
+                        _flush(p_id, 0, unresolved)
+                    # Enqueue immediately — consumers start sending NOW
+                    for uid, em in pairs:
+                        if _ctrl() == "stop":
+                            stats[p_id]["done"] = True
+                            return
+                        await q.put((p_id, em, auth_c))
+                    logger.debug(f"[{p_id}] chunk {i//CHUNK_SIZE+1}: enqueued {len(pairs)} emails")
 
-            await asyncio.gather(*all_coros, return_exceptions=True)
+                stats[p_id]["done"] = True
+
+            # ── CONSUMER: pull from queue and send ────────────────────────
+            async def consumer():
+                while True:
+                    item = await q.get()
+                    if item is None:   # sentinel
+                        q.task_done()
+                        return
+                    p_id, em, auth_c = item
+                    try:
+                        # Respect pause/stop
+                        sig = _ctrl()
+                        if sig == "stop":
+                            q.task_done()
+                            return
+                        while sig == "pause":
+                            await asyncio.sleep(0.5)
+                            sig = _ctrl()
+                        if sig == "stop":
+                            q.task_done()
+                            return
+
+                        ok = await loop.run_in_executor(executor, _sync_send, auth_c, em)
+                        if ok:
+                            stats[p_id]["ok"] += 1
+                        else:
+                            stats[p_id]["fail"] += 1
+
+                        # Periodic flush to Redis
+                        t = stats[p_id]["ok"] + stats[p_id]["fail"]
+                        if t % 50 == 0:
+                            _flush(p_id, stats[p_id]["ok"], stats[p_id]["fail"])
+                            stats[p_id]["ok"] = stats[p_id]["fail"] = 0
+                    finally:
+                        q.task_done()
+
+            # ── SENTINEL DISPATCHER: signals consumers after all producers done ──
+            async def sentinel_dispatcher():
+                # Wait for every producer to finish
+                await asyncio.gather(*producer_tasks, return_exceptions=True)
+                # Drain queue then send one sentinel per consumer
+                for _ in range(n_consumers):
+                    await q.put(None)
+
+            # Launch all producers concurrently + consumers + sentinel
+            producer_tasks = [
+                asyncio.create_task(producer(p_id, meta))
+                for p_id, meta in proj_meta.items()
+            ]
+            consumer_tasks = [
+                asyncio.create_task(consumer())
+                for _ in range(n_consumers)
+            ]
+            await asyncio.gather(
+                sentinel_dispatcher(),
+                *consumer_tasks,
+                return_exceptions=True
+            )
             executor.shutdown(wait=False)
 
-            # Flush any remaining stats
+            # Final flush
             for p_id in stats:
                 _flush(p_id, stats[p_id]["ok"], stats[p_id]["fail"])
 
-            grand_ok   = sum(int(_r.hget(f"campaign:{campaign_id}:{p}:stats", "successful") or 0) for p in resolved)
-            grand_fail = sum(int(_r.hget(f"campaign:{campaign_id}:{p}:stats", "failed")     or 0) for p in resolved)
+            grand_ok   = sum(int(_r.hget(f"campaign:{campaign_id}:{p}:stats", "successful") or 0) for p in proj_meta)
+            grand_fail = sum(int(_r.hget(f"campaign:{campaign_id}:{p}:stats", "failed")     or 0) for p in proj_meta)
 
             if campaign_id in active_campaigns:
                 active_campaigns[campaign_id].update({
@@ -3396,7 +3430,7 @@ async def send_campaign(request: Request):
                 })
                 save_campaigns_to_file()
 
-            logger.info(f"✅ [TURBO] Done: {grand_ok} sent, {grand_fail} failed / {total_users} total")
+            logger.info(f"✅ [TURBO v7] Done: {grand_ok} sent, {grand_fail} failed / {total_users} total")
             return {
                 "success": True, "mode": "turbo", "campaignId": campaign_id,
                 "total": total_users, "successful": int(grand_ok), "failed": int(grand_fail),
@@ -3404,52 +3438,100 @@ async def send_campaign(request: Request):
             }
 
         # ==================================================================
-        # THROTTLED — ms-precision, projects run in parallel
-        # Each project's emails are sent sequentially with asyncio.sleep(delay_s)
-        # between each. Uses pyrebase in executor (same as turbo).
+        # THROTTLED — ms-precision, streaming, all projects in parallel
+        # Same producer-consumer pattern. Delay applied PER EMAIL in consumer.
         # ==================================================================
         elif sending_mode == "throttled":
             from concurrent.futures import ThreadPoolExecutor
-            delay_s = delay_ms / 1000.0 if delay_ms > 0 else 0.01
-            logger.info(f"⚙️ [THROTTLE] {1.0/delay_s:.1f} emails/sec (delay={delay_ms}ms) | {len(resolved)} project(s) parallel")
-            executor = ThreadPoolExecutor(max_workers=len(resolved) * 2 + 4)
 
-            def _sync_send_th(auth_client, email):
-                try:
-                    auth_client.send_password_reset_email(email)
-                    return True
-                except Exception:
-                    return False
+            delay_s     = delay_ms / 1000.0 if delay_ms > 0 else 0.01
+            CHUNK_SIZE  = 100
+            N_PRODUCERS = len(proj_meta)
 
-            async def _throttle_project(proj_id, pairs, auth_client):
+            executor = ThreadPoolExecutor(max_workers=N_PRODUCERS * 3 + 4)
+            q        = asyncio.Queue(maxsize=200)
+            stats    = {p: {"ok": 0, "fail": 0} for p in proj_meta}
+
+            logger.info(
+                f"⚙️ [THROTTLE v7] {1.0/delay_s:.1f} emails/sec "
+                f"(delay={delay_ms}ms) | {N_PRODUCERS} project(s) streaming"
+            )
+
+            async def th_producer(p_id, meta):
+                uid_list  = meta["uid_list"]
+                admin_app = meta["admin_app"]
+                auth_c    = meta["auth_client"]
+                if not admin_app or not auth_c:
+                    _flush(p_id, 0, len(uid_list))
+                    return
+                for i in range(0, len(uid_list), CHUNK_SIZE):
+                    chunk = uid_list[i:i+CHUNK_SIZE]
+                    pairs = await loop.run_in_executor(executor, _resolve_chunk, p_id, chunk, admin_app)
+                    unresolved = len(chunk) - len(pairs)
+                    if unresolved:
+                        _flush(p_id, 0, unresolved)
+                    for uid, em in pairs:
+                        if _ctrl() == "stop":
+                            return
+                        await q.put((p_id, em, auth_c))
+
+            # One consumer per project — each has its own delay timer
+            # so projects don't block each other
+            async def th_consumer_project(p_id, meta):
+                auth_c = meta["auth_client"]
                 ok = fail = 0
-                for uid, em in pairs:
-                    sig = _ctrl()
-                    if sig == "stop":
+                while True:
+                    # non-blocking get with timeout
+                    try:
+                        item = await asyncio.wait_for(q.get(), timeout=5.0)
+                    except asyncio.TimeoutError:
                         break
-                    while sig == "pause":
-                        await asyncio.sleep(0.5)
+                    if item is None:
+                        q.task_done()
+                        break
+                    p, em, ac = item
+                    try:
                         sig = _ctrl()
-                    if sig == "stop":
-                        break
-                    sent = await loop.run_in_executor(executor, _sync_send_th, auth_client, em)
-                    if sent:
-                        ok += 1
-                    else:
-                        fail += 1
-                    if (ok + fail) % 10 == 0:
-                        _flush(proj_id, ok, fail)
-                        ok = fail = 0
-                    await asyncio.sleep(delay_s)
-                if ok or fail:
-                    _flush(proj_id, ok, fail)
+                        if sig == "stop":
+                            q.task_done()
+                            break
+                        while sig == "pause":
+                            await asyncio.sleep(0.5)
+                            sig = _ctrl()
+                        if sig == "stop":
+                            q.task_done()
+                            break
 
-            await asyncio.gather(*[
-                _throttle_project(p_id, pairs, proj_meta[p_id]["auth_client"])
-                for p_id, pairs in resolved.items()
-                if proj_meta[p_id]["auth_client"]
-            ], return_exceptions=True)
+                        sent = await loop.run_in_executor(executor, _sync_send, ac, em)
+                        if sent:
+                            stats[p]["ok"] += 1
+                        else:
+                            stats[p]["fail"] += 1
+
+                        t = stats[p]["ok"] + stats[p]["fail"]
+                        if t % 10 == 0:
+                            _flush(p, stats[p]["ok"], stats[p]["fail"])
+                            stats[p]["ok"] = stats[p]["fail"] = 0
+
+                        await asyncio.sleep(delay_s)
+                    finally:
+                        q.task_done()
+
+            async def th_sentinel():
+                prod_tasks = [asyncio.create_task(th_producer(p, m)) for p, m in proj_meta.items()]
+                await asyncio.gather(*prod_tasks, return_exceptions=True)
+                for _ in proj_meta:
+                    await q.put(None)
+
+            cons_tasks = [
+                asyncio.create_task(th_consumer_project(p_id, meta))
+                for p_id, meta in proj_meta.items()
+            ]
+            await asyncio.gather(th_sentinel(), *cons_tasks, return_exceptions=True)
             executor.shutdown(wait=False)
+
+            for p_id in stats:
+                _flush(p_id, stats[p_id]["ok"], stats[p_id]["fail"])
 
             if campaign_id in active_campaigns:
                 active_campaigns[campaign_id]["status"] = "completed"
@@ -3463,7 +3545,7 @@ async def send_campaign(request: Request):
             }
 
         # ==================================================================
-        # SCHEDULED — store in Redis, fire via APScheduler
+        # SCHEDULED — fire via APScheduler at exact time
         # ==================================================================
         elif sending_mode == "scheduled":
             schedule_config = request_data.get("schedule_config", {})
@@ -3513,12 +3595,8 @@ async def send_campaign(request: Request):
         else:
             return {"success": False, "error": f"Invalid sending_mode: {sending_mode}"}
 
-    except Exception as e:
-        logger.error(f"send_campaign failed: {e}")
-        return {"success": False, "error": str(e)}
 
 
-# ============================================================================
 # CAMPAIGN CONTROL — Redis client for pause/stop/resume signals
 # ============================================================================
 _campaign_ctrl_redis = None
