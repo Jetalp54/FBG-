@@ -2634,27 +2634,52 @@ async def list_campaigns(request: Request, page: int = 1, limit: int = 10):
 
         # ── 3. Merge: file (full config) + DB (live counts) + memory (real-time) ──
         final_list = []
-        for c in file_campaigns:
-            c_id = c.get('id')
-
+        
+        # Get all unique IDs from all sources
+        all_ids = set(file_map.keys()) | set(active_campaigns.keys()) | set(db_status_map.keys())
+        
+        for c_id in all_ids:
+            # Base source strategy: Memory > File > DB (for config data)
+            # We need the most "complete" config object available
+            
+            base_c = {}
             if c_id in active_campaigns:
-                # Memory version has the most current data; patch missing config fields from file
-                mem_c = dict(active_campaigns[c_id])
-                for field in ('throttle_config', 'schedule_config', 'selectedUsers', 'turbo_config', 'sending_mode'):
-                    if not mem_c.get(field) and c.get(field):
-                        mem_c[field] = c[field]
-                final_list.append(mem_c)
+                base_c = dict(active_campaigns[c_id])
+                # Ensure config fields from file are not lost in memory version
+                if c_id in file_map:
+                    file_c = file_map[c_id]
+                    for field in ('throttle_config', 'schedule_config', 'selectedUsers', 'turbo_config', 'sending_mode'):
+                        if not base_c.get(field) and file_c.get(field):
+                            base_c[field] = file_c[field]
+            elif c_id in file_map:
+                 base_c = dict(file_map[c_id])
             else:
-                merged = dict(c)  # start with full file data
-                if c_id in db_status_map:
-                    db = db_status_map[c_id]
-                    merged.update({
-                        'status':     db.get('status',     merged.get('status', 'pending')),
-                        'processed':  db.get('processed',  merged.get('processed', 0)),
-                        'successful': db.get('successful', merged.get('successful', 0)),
-                        'failed':     db.get('failed',     merged.get('failed', 0)),
-                    })
-                final_list.append(merged)
+                 # Only in DB? Construct minimal object
+                 # This happens if file is lost but DB record exists
+                 base_c = {
+                     'id': c_id, 
+                     'name': 'Restored from DB',
+                     'status': 'unknown',
+                     'createdAt': datetime.now().isoformat()
+                 }
+
+            # Overlay DB status (live counts from database)
+            if c_id in db_status_map:
+                db = db_status_map[c_id]
+                base_c.update({
+                    'status':     db.get('status',     base_c.get('status', 'pending')),
+                    'processed':  db.get('processed',  base_c.get('processed', 0)),
+                    'successful': db.get('successful', base_c.get('successful', 0)),
+                    'failed':     db.get('failed',     base_c.get('failed', 0)),
+                })
+            
+            # Filter ownership for non-admins
+            if not is_admin and base_c.get('ownerId') != current_user:
+                continue
+
+            final_list.append(base_c)
+            
+        logger.info(f"List campaigns: found {len(all_ids)} total IDs. Returning {len(final_list)} after filter (user={current_user}, admin={is_admin}).")
 
         # Sort newest first
         final_list.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
