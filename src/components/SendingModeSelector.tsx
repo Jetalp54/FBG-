@@ -80,6 +80,8 @@ export const SendingModeSelector = ({ value, onChange, totalUsers = 10000 }: Sen
 
     // ── Throttle state (ms-native) ───────────────────────────────────────────────
     const [delayMs, setDelayMs] = useState(10);      // 10ms → 100 emails/sec
+    const PRESETS = [1, 5, 10, 50, 100, 500, 1000, 5000, 10000];
+    const isCustom = !PRESETS.includes(delayMs);
     const [burstCapacity, setBurstCapacity] = useState(100);
 
     // ── Schedule state ───────────────────────────────────────────────────────────
@@ -246,14 +248,18 @@ export const SendingModeSelector = ({ value, onChange, totalUsers = 10000 }: Sen
 
                         {/* Quick Presets */}
                         <div>
-                            <Label className="text-gray-400 text-xs mb-2 block">⚡ Presets</Label>
+                            <Label className="text-gray-400 text-xs mb-2 block">⚡ Presets — click or type any value below</Label>
                             <div className="flex flex-wrap gap-2">
                                 {[
                                     { label: 'Ultra (1ms)', ms: 1, burst: 500 },
                                     { label: 'Fast (5ms)', ms: 5, burst: 200 },
                                     { label: 'Normal (10ms)', ms: 10, burst: 100 },
-                                    { label: 'ISP-Safe (50ms)', ms: 50, burst: 20 },
+                                    { label: 'Safe (50ms)', ms: 50, burst: 20 },
                                     { label: 'Slow (100ms)', ms: 100, burst: 10 },
+                                    { label: '500ms', ms: 500, burst: 5 },
+                                    { label: '1s (1000ms)', ms: 1000, burst: 2 },
+                                    { label: '5s (5000ms)', ms: 5000, burst: 1 },
+                                    { label: '10s (10000ms)', ms: 10000, burst: 1 },
                                 ].map(preset => (
                                     <button
                                         key={preset.label}
@@ -263,42 +269,54 @@ export const SendingModeSelector = ({ value, onChange, totalUsers = 10000 }: Sen
                                             emitThrottle(preset.ms, preset.burst);
                                         }}
                                         className={`px-3 py-1 rounded-full text-xs border transition-all ${delayMs === preset.ms
-                                                ? 'border-blue-500 bg-blue-500/20 text-blue-300'
-                                                : 'border-gray-600 text-gray-400 hover:border-blue-500 hover:text-blue-300'
+                                            ? 'border-blue-500 bg-blue-500/20 text-blue-300'
+                                            : 'border-gray-600 text-gray-400 hover:border-blue-500 hover:text-blue-300'
                                             }`}
                                     >
                                         {preset.label}
                                     </button>
                                 ))}
+                                {isCustom && (
+                                    <span className="px-3 py-1 rounded-full text-xs border border-purple-500 bg-purple-500/20 text-purple-300">
+                                        Custom ({delayMs}ms)
+                                    </span>
+                                )}
                             </div>
                         </div>
 
-                        {/* Delay ms */}
+                        {/* Custom Delay Input */}
                         <div>
                             <Label htmlFor="delayMs" className="text-gray-300 text-sm">
-                                Delay Between Emails (ms)
+                                ✏️ Custom Delay (ms) — type any value
                             </Label>
                             <div className="flex items-center gap-3 mt-1">
                                 <Input
                                     id="delayMs"
                                     type="number"
                                     min="1"
-                                    max="60000"
                                     value={delayMs}
                                     onChange={(e) => {
-                                        const v = Math.max(1, parseInt(e.target.value) || 10);
+                                        const v = Math.max(1, parseInt(e.target.value) || 1);
                                         setDelayMs(v);
                                         emitThrottle(v, burstCapacity);
                                     }}
-                                    className="bg-gray-700 border-gray-600 text-white w-32"
+                                    className={`border-gray-600 text-white w-36 text-lg font-mono ${isCustom ? 'bg-purple-900/30 border-purple-500' : 'bg-gray-700'
+                                        }`}
+                                    placeholder="e.g. 1000"
                                 />
-                                <div className="text-xs text-gray-400">
-                                    = <span className="text-blue-400 font-semibold">{(1000 / delayMs).toFixed(1)} emails/sec</span>
-                                    <span className="text-gray-600 ml-2">({(1 / delayMs).toFixed(4)} emails/ms)</span>
+                                <div className="text-sm">
+                                    <span className="text-blue-400 font-bold text-base">{delayMs >= 1000 ? (delayMs / 1000).toFixed(1) + 's' : delayMs + 'ms'}</span>
+                                    <span className="text-gray-400 ml-2">→</span>
+                                    <span className="text-green-400 font-semibold ml-2">
+                                        {delayMs >= 1000
+                                            ? `${(1000 / delayMs).toFixed(2)} emails/sec`
+                                            : `${(1000 / delayMs).toFixed(1)} emails/sec`
+                                        }
+                                    </span>
                                 </div>
                             </div>
-                            <p className="text-xs text-gray-600 mt-1">
-                                Minimum gap enforced by Redis atomic Lua script across all Celery workers
+                            <p className="text-xs text-gray-500 mt-1">
+                                This delay is the gap between launching each email. The server sends them concurrently — actual throughput = 1000 ÷ delay_ms per/sec.
                             </p>
                         </div>
 

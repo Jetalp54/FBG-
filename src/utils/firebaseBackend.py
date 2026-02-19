@@ -2583,129 +2583,86 @@ async def create_campaign(campaign: CampaignCreate, request: Request):
 @app.get("/campaigns")
 async def list_campaigns(request: Request, page: int = 1, limit: int = 10):
     """
-    List campaigns. 
-    Strategy: Try DB -> Fallback to File -> Overlay Memory Stats.
+    List campaigns.
+    STRATEGY: File/memory is source of truth for FULL config (throttle_config,
+    selectedUsers, schedule_config, etc.). DB is queried ONLY for live status/counts.
+    This ensures campaigns NEVER lose their config on refresh.
     """
     try:
         current_user = get_current_user_from_request(request)
-        
-        # Check Admin Status
-        users = load_app_users()
-        user_data = next((u for u in users.get('users', []) if u.get('username') == current_user), None)
-        is_admin = user_data and user_data.get('role') == 'admin'
-        
-        campaigns_list = []
-        db_success = False
-        
-        # 1. Try DB
+        users_data   = load_app_users()
+        user_obj     = next((u for u in users_data.get('users', []) if u.get('username') == current_user), None)
+        is_admin     = user_obj and user_obj.get('role') == 'admin'
+
+        # ── 1. Load full campaign data from file (source of truth for all fields) ──
+        file_campaigns = load_campaigns_from_file() or []
+        if not is_admin:
+            file_campaigns = [c for c in file_campaigns if c.get('ownerId') == current_user]
+        file_map = {c.get('id'): c for c in file_campaigns if c.get('id')}
+
+        # ── 2. Query DB for live status/counts only ────────────────────────────────
+        db_status_map = {}
         try:
             conn = get_db_connection()
             if conn:
-                cursor = conn.cursor()
-                query = """
-                    SELECT c.id, c.campaign_uuid, c.name, c.project_ids, c.batch_size, c.workers, c.template, 
-                           c.status, c.processed, c.successful, c.failed, c.created_at,
-                           u.username as owner, c.sending_mode, c.turbo_config
+                q = """
+                    SELECT c.campaign_uuid, c.status, c.processed, c.successful, c.failed
                     FROM campaigns c
                     LEFT JOIN app_users u ON c.owner_id = u.id
                 """
                 params = []
                 if not is_admin:
-                    query += " WHERE u.username = %s"
+                    q += " WHERE u.username = %s"
                     params.append(current_user)
-                query += " ORDER BY c.created_at DESC"
-                
-                cursor.execute(query, tuple(params))
-                rows = cursor.fetchall()
-                cols = [desc[0] for desc in cursor.description]
-                
-                for row in rows:
-                    c = dict(zip(cols, row))
-                    c_uuid = c.get('campaign_uuid') or str(c['id'])
-                    campaign_obj = {
-                        "id": c_uuid,
-                        "db_id": c['id'],
-                        "name": c['name'],
-                        "projectIds": c['project_ids'] if isinstance(c['project_ids'], list) else json.loads(c['project_ids'] if c['project_ids'] else '[]'),
-                        "batchSize": c['batch_size'],
-                        "workers": c['workers'],
-                        "template": c['template'],
-                        "status": c['status'],
-                        "createdAt": c['created_at'].isoformat() if c['created_at'] else "",
-                        "processed": c['processed'],
-                        "successful": c['successful'],
-                        "failed": c['failed'],
-                        "ownerId": c['owner'],
-                        "sending_mode": c.get('sending_mode', 'turbo'),
-                        "turbo_config": c['turbo_config'] if isinstance(c['turbo_config'], dict) else json.loads(c['turbo_config'] if c['turbo_config'] else '{}')
-                    }
-                    campaigns_list.append(campaign_obj)
-                
+                cursor = conn.cursor()
+                cursor.execute(q, tuple(params))
+                for row in cursor.fetchall():
+                    c_uuid = row[0]
+                    if c_uuid:
+                        db_status_map[c_uuid] = {
+                            'status': row[1], 'processed': row[2] or 0,
+                            'successful': row[3] or 0, 'failed': row[4] or 0,
+                        }
                 conn.close()
-                db_success = True
         except Exception as e:
-            logger.warning(f"DB List Failed ({e}). Falling back to file.")
-            
-        # 2. Fallback to File if DB failed or returned nothing (and we expect something?)
-        # Actually if DB is empty, it might just be empty. But if checks failed, use file.
-        if not db_success:
-            campaigns_list = load_campaigns_from_file() or []
-            # Filter ownership
-            if not is_admin:
-                campaigns_list = [c for c in campaigns_list if c.get('ownerId') == current_user]
-            # Sort
-            if campaigns_list:
-                campaigns_list.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
-            
-        # 3. Overlay Live Stats from Memory
+            logger.warning(f"DB status overlay failed: {e}")
+
+        # ── 3. Merge: file (full config) + DB (live counts) + memory (real-time) ──
         final_list = []
-        for c in campaigns_list:
+        for c in file_campaigns:
             c_id = c.get('id')
-            # If in memory (active), use that version as it has live counters
+
             if c_id in active_campaigns:
-                final_list.append(active_campaigns[c_id])
+                # Memory version has the most current data; patch missing config fields from file
+                mem_c = dict(active_campaigns[c_id])
+                for field in ('throttle_config', 'schedule_config', 'selectedUsers', 'turbo_config', 'sending_mode'):
+                    if not mem_c.get(field) and c.get(field):
+                        mem_c[field] = c[field]
+                final_list.append(mem_c)
             else:
-                final_list.append(c)
-                
-        # Pagination
+                merged = dict(c)  # start with full file data
+                if c_id in db_status_map:
+                    db = db_status_map[c_id]
+                    merged.update({
+                        'status':     db.get('status',     merged.get('status', 'pending')),
+                        'processed':  db.get('processed',  merged.get('processed', 0)),
+                        'successful': db.get('successful', merged.get('successful', 0)),
+                        'failed':     db.get('failed',     merged.get('failed', 0)),
+                    })
+                final_list.append(merged)
+
+        # Sort newest first
+        final_list.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
+
+        # ── 4. Pagination ──────────────────────────────────────────────────────────
         total_campaigns = len(final_list)
-        total_pages = (total_campaigns + limit - 1) // limit
-        start_index = (page - 1) * limit
-        end_index = start_index + limit
-        
-        paginated = final_list[start_index:end_index]
-        
-        return {
-            "campaigns": paginated,
-            "total": total_campaigns,
-            "page": page,
-            "pages": total_pages,
-            "user": current_user, 
-            "source": "database" if db_success else "file_fallback"
-        }
+        total_pages     = (total_campaigns + limit - 1) // limit
+        start_index     = (page - 1) * limit
+        paginated       = final_list[start_index: start_index + limit]
 
-    except Exception as e:
-        logger.error(f"List Campaigns Error: {e}")
-        return {"campaigns": [], "total": 0, "page": page, "pages": 0, "error": str(e)}
-        
-        # Get campaigns for current page
-        paginated_campaigns = campaigns_list[start_index:end_index]
-        
         return {
-            "campaigns": paginated_campaigns,
-            "pagination": {
-                "page": page,
-                "limit": limit,
-                "total": total_campaigns,
-                "total_pages": total_pages,
-                "has_next": page < total_pages,
-                "has_prev": page > 1
-            }
-        }
-    except Exception as e:
-        logger.error(f"Error in list_campaigns: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to list campaigns: {str(e)}")
-
+            "campaigns":    paginated,
+            "total":        total_campaigns,
 @app.get("/campaigns/{campaign_id}")
 async def get_campaign(campaign_id: str):
     """Get campaign details - merges Redis live stats from Celery worker"""
