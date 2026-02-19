@@ -20,7 +20,9 @@ python-dotenv
 # HTTP & Requests
 requests
 httpx
+aiohttp
 aiofiles
+redis
 
 # DNS Resolution (for Cloudflare domain verification)
 dnspython

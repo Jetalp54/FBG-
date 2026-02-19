@@ -2770,11 +2770,9 @@ async def get_campaign(campaign_id: str):
 @app.put("/campaigns/{campaign_id}")
 async def update_campaign(campaign_id: str, campaign_update: CampaignUpdate):
     """Update campaign settings"""
-    if campaign_id not in active_campaigns:
+    campaign = _get_campaign(campaign_id)
+    if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    
-    campaign = active_campaigns[campaign_id]
-    
     if campaign["status"] == "running":
         raise HTTPException(status_code=400, detail="Cannot update running campaign")
     
@@ -2804,11 +2802,9 @@ async def update_campaign(campaign_id: str, campaign_update: CampaignUpdate):
 @app.delete("/campaigns/{campaign_id}")
 async def delete_campaign(campaign_id: str):
     """Delete a campaign"""
-    if campaign_id not in active_campaigns:
+    campaign = _get_campaign(campaign_id)
+    if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    
-    campaign = active_campaigns[campaign_id]
-    
     if campaign["status"] == "running":
         raise HTTPException(status_code=400, detail="Cannot delete running campaign")
     
@@ -3179,314 +3175,327 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
     
     return successful_sends
 
+
+def _get_campaign(campaign_id: str):
+    """Load campaign from active_campaigns memory OR file (persistence-safe)."""
+    if campaign_id in active_campaigns:
+        return active_campaigns[campaign_id]
+    # Fallback: search in campaigns file
+    all_campaigns = load_campaigns_from_file() or []
+    for c in all_campaigns:
+        if c.get("id") == campaign_id:
+            active_campaigns[campaign_id] = c  # re-hydrate memory
+            return c
+    return None
+
+
 @app.post("/campaigns/send")
 async def send_campaign(request: Request):
     """
-    Enterprise Campaign Send Endpoint - Supports 3 modes:
-    1. TURBO: Maximum speed using all resources
-    2. THROTTLED: Rate-limited sending (ms-based)
-    3. SCHEDULED: Schedule for later execution
+    ⚡ Enterprise Campaign Send Engine v5.0 — DIRECT ASYNC
+    =======================================================
+    TURBO    : asyncio.gather() all emails CONCURRENTLY via Firebase REST API.
+               300 simultaneous connections. No Celery. No workers.
+    THROTTLED: Each project runs concurrently; emails within project are
+               rate-limited with asyncio.sleep(delay_ms/1000). ms-precision.
+    Both modes check Redis pause/stop signal before every send.
     """
+    import asyncio
+    import aiohttp
+
     try:
-        # Parse JSON body
         try:
             request_data = await request.json()
-            logger.info(f"Campaign send request received: {request_data}")
-        except Exception as json_error:
-            logger.error(f"Failed to parse JSON request: {json_error}")
+        except Exception:
             return {"success": False, "error": "Invalid JSON request"}
-        
-        # Extract sending mode
-        sending_mode = request_data.get('sending_mode', 'turbo')
-        campaign_id = request_data.get('campaignId', f"campaign_{int(time.time())}")
-        
-        # Handle different request formats
-        projects = request_data.get('projects')
-        project_id = request_data.get('projectId')
-        user_ids = request_data.get('userIds')
-        
-        # Convert single project format to multi-project format
-        if project_id and user_ids:
-            projects = [{'projectId': project_id, 'userIds': user_ids}]
-        
-        if not projects or not isinstance(projects, list):
-            logger.error(f"No projects provided in request")
+
+        sending_mode = request_data.get("sending_mode", "turbo")
+        campaign_id  = request_data.get("campaignId", f"campaign_{int(time.time())}")
+
+        projects_raw = request_data.get("projects")
+        project_id   = request_data.get("projectId")
+        user_ids_raw = request_data.get("userIds")
+        if project_id and user_ids_raw:
+            projects_raw = [{"projectId": project_id, "userIds": user_ids_raw}]
+        if not projects_raw or not isinstance(projects_raw, list):
             return {"success": False, "error": "No projects provided"}
-        
-        logger.info(f"📨 Starting campaign {campaign_id} in {sending_mode.upper()} mode for {len(projects)} projects")
-        
-        # ==================================================================
-        # MODE 1: TURBO - Maximum Speed
-        # ==================================================================
-        if sending_mode == 'turbo':
-            logger.info(f"🚀 [TURBO MODE] Enterprise Queue Dispatch (Celery)")
-            
-            # --- ENTERPRISE QUEUE LOGIC ---
-            try:
-                # Dynamic Import
+
+        logger.info(f"⚡ Campaign {campaign_id} | mode={sending_mode.upper()} | {len(projects_raw)} project(s)")
+
+        # ── Throttle config ───────────────────────────────────────────────
+        throttle_config = request_data.get("throttle_config") or {}
+        delay_ms = float(throttle_config.get("delay_ms") or throttle_config.get("delayMs") or 0)
+        if delay_ms <= 0 and sending_mode == "throttled":
+            eps = float(throttle_config.get("emails_per_ms") or throttle_config.get("emailsPerMs") or 0)
+            delay_ms = (1.0 / eps) if eps > 0 else 10.0
+
+        # ── Redis helpers ─────────────────────────────────────────────────
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        _r = redis.Redis.from_url(redis_url, decode_responses=True)
+
+        def _ctrl():
+            return _r.get(f"campaign:{campaign_id}:control")
+
+        def _flush(proj_id, ok, fail):
+            if ok == 0 and fail == 0:
+                return
+            key = f"campaign:{campaign_id}:{proj_id}:stats"
+            pipe = _r.pipeline()
+            pipe.hincrby(key, "processed", ok + fail)
+            if ok:   pipe.hincrby(key, "successful", ok)
+            if fail: pipe.hincrby(key, "failed",     fail)
+            pipe.expire(key, 86400)
+            pipe.execute()
+
+        # ── UID → email resolution (sync, in thread executor) ────────────
+        def _resolve(proj_id, uid_list):
+            app_obj = firebase_apps.get(proj_id)
+            if not app_obj:
+                logger.warning(f"[{proj_id}] No firebase app initialised")
+                return {}
+            result = {}
+            for i in range(0, len(uid_list), 100):
+                chunk = uid_list[i:i+100]
                 try:
-                    from src.utils.celery_tasks import process_campaign_batch
-                except ImportError:
-                    try:
-                        from celery_tasks import process_campaign_batch
-                    except ImportError as e:
-                        logger.error(f"Could not import Celery tasks: {e}")
-                        raise Exception("Celery/Redis infrastructure not found. Please install requirements-enterprise.txt")
+                    ids = [auth.UidIdentifier(u) for u in chunk]
+                    res = auth.get_users(ids, app=app_obj)
+                    for u in res.users:
+                        if u.email:
+                            result[u.uid] = u.email
+                except Exception as ex:
+                    logger.warning(f"[{proj_id}] batch lookup err: {ex}")
+                    for uid in chunk:
+                        try:
+                            u = auth.get_user(uid, app=app_obj)
+                            if u.email:
+                                result[u.uid] = u.email
+                        except Exception:
+                            pass
+            return result
 
-                total_users = 0
-                total_batches = 0
-                
-                # Initialize Campaign Stats (UI shows 'Running')
-                create_campaign_result(campaign_id, project_id, 0)
-                
-                # Iterate and Enqueue
-                for proj in projects:
-                    p_id = str(proj.get('projectId', ''))
-                    u_ids = proj.get('userIds', [])
-                    
-                    if not u_ids:
-                        continue
-                        
-                    # Configurable Batch Size & Rate Limit
-                    batch_size = request_data.get('batchSize', 100)
-                    rate_limit = request_data.get('rate_limit') # Emails per second (Global)
-                    
-                    batches = [u_ids[i:i + batch_size] for i in range(0, len(u_ids), batch_size)]
-                    
-                    logger.info(f"[{p_id}] Enqueueing {len(batches)} batches for {len(u_ids)} users. Global Limit: {rate_limit}/s")
-                    
-                    for batch in batches:
-                        process_campaign_batch.delay(campaign_id, p_id, batch, rate_limit)
-                        total_batches += 1
-                        total_users += len(batch)
-
-                return {
-                    "success": True, 
-                    "message": f"Campaign Started. {total_users} emails queued on Enterprise Hub.", 
-                    "campaignId": campaign_id,
-                    "mode": "enterprise_turbo"
-                }
-
-            except Exception as e:
-                logger.error(f"❌ Enterprise Dispatch Error: {e}")
-                return {
-                    "success": False, 
-                    "error": f"Enterprise Dispatch Failed: {str(e)}. Check Redis."
-                }
-
-            
-
-
-            
-
-
-
-            
-
-            
-            # Non-blocking wait: we can't await threads in asyncio, 
-            # so we use a background task to monitor them if we want to update status later.
-            # But for the immediate response, we just return "Started".
-            # To define `final_status` accurately, we'll wait for them here since the user expects
-            # a response regarding the *launch* (which we did).
-            
-            # Let's wait for threads to finish for the REPORT, but maybe we should background it?
-            # The original code awaited `run_in_executor`. 
-            # Let's start a background task to wait for threads and update status.
-            
-
-                
-
-
-
-
-        
-        # ==================================================================
-        # MODE 2: THROTTLED - Celery-backed, Redis distributed rate limiter
-        #         Configurable in MILLISECONDS
-        # ==================================================================
-        elif sending_mode == 'throttled':
-            throttle_config = request_data.get('throttle_config', {})
-
-            # ---- Rate configuration (ms-native) ----
-            # Users can pass either:
-            #   emails_per_ms  (e.g. 0.1 = 100 emails/sec)
-            #   delay_ms       (e.g. 10  = 10ms between every email = 100/sec)
-            emails_per_ms = float(throttle_config.get('emails_per_ms', 0) or
-                                  throttle_config.get('emailsPerMs', 0))
-            delay_ms      = float(throttle_config.get('delay_ms', 0) or
-                                  throttle_config.get('delayMs', 0))
-            burst_capacity = int(throttle_config.get('burst_capacity', 50) or
-                                 throttle_config.get('burstCapacity', 50))
-            batch_size = int(request_data.get('batchSize', 50))
-
-            # Compute per-second rate for the Redis rate limiter
-            if emails_per_ms > 0:
-                emails_per_second = emails_per_ms * 1000.0
-            elif delay_ms > 0:
-                emails_per_second = 1000.0 / delay_ms
-            else:
-                emails_per_second = 10.0  # default: 10/sec
-
-            logger.info(
-                f"⚙️ [THROTTLED] Campaign {campaign_id} — "
-                f"{emails_per_second:.1f} emails/sec "
-                f"(delay_ms={delay_ms}, emails_per_ms={emails_per_ms}), "
-                f"burst={burst_capacity}"
+        # ── Async REST sender (no pyrebase, fully async) ─────────────────
+        async def _send_one(session, api_key, email, proj_id):
+            url = (
+                "https://identitytoolkit.googleapis.com/v1/"
+                f"accounts:sendOobCode?key={api_key}"
             )
-
             try:
-                try:
-                    from src.utils.celery_tasks import process_campaign_batch
-                except ImportError:
-                    from celery_tasks import process_campaign_batch
+                async with session.post(
+                    url, json={"requestType": "PASSWORD_RESET", "email": email},
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as resp:
+                    return resp.status == 200
+            except Exception as ex:
+                logger.debug(f"[{proj_id}] send err {email}: {ex}")
+                return False
 
-                total_users = 0
-                total_batches = 0
+        # ── Build project metadata + resolve emails in parallel ──────────
+        loop = asyncio.get_event_loop()
+        proj_meta = {}
+        for proj in projects_raw:
+            p_id = str(proj.get("projectId", ""))
+            u_ids = proj.get("userIds", [])
+            if not u_ids or not p_id:
+                continue
+            info = projects.get(p_id) or {}
+            api_key = (info.get("apiKey") or info.get("api_key") or
+                       proj.get("apiKey") or proj.get("api_key") or "")
+            proj_meta[p_id] = {"api_key": api_key, "uid_list": u_ids}
 
-                create_campaign_result(campaign_id, project_id, 0)
+        if not proj_meta:
+            return {"success": False, "error": "No valid projects found"}
 
-                for proj in projects:
-                    p_id = str(proj.get('projectId', ''))
-                    u_ids = proj.get('userIds', [])
-                    if not u_ids:
-                        continue
+        # Resolve UIDs for all projects concurrently
+        resolve_coros = {
+            p_id: loop.run_in_executor(None, _resolve, p_id, meta["uid_list"])
+            for p_id, meta in proj_meta.items()
+        }
+        resolved = {}
+        for p_id, coro in resolve_coros.items():
+            uid_email = await coro
+            resolved[p_id] = [(uid, email) for uid, email in uid_email.items()]
+            unresolved = len(proj_meta[p_id]["uid_list"]) - len(resolved[p_id])
+            if unresolved:
+                _flush(p_id, 0, unresolved)
+            logger.info(f"[{p_id}] Resolved {len(resolved[p_id])}/{len(proj_meta[p_id]['uid_list'])} emails")
 
-                    batches = [u_ids[i:i + batch_size] for i in range(0, len(u_ids), batch_size)]
-                    logger.info(
-                        f"[{p_id}] Throttled: enqueueing {len(batches)} batches "
-                        f"× {batch_size} users at {emails_per_second:.1f}/sec"
-                    )
-
-                    for batch in batches:
-                        process_campaign_batch.delay(
-                            campaign_id, p_id, batch,
-                            mode='throttled',
-                            emails_per_second=emails_per_second,
-                            delay_ms_between_emails=delay_ms
-                        )
-                        total_batches += 1
-                        total_users += len(batch)
-
-                return {
-                    "success": True,
-                    "message": (
-                        f"Throttled campaign started. {total_users} emails queued "
-                        f"at {emails_per_second:.1f}/sec."
-                    ),
-                    "campaignId": campaign_id,
-                    "mode": "enterprise_throttle",
-                    "rate": {"emails_per_second": emails_per_second, "delay_ms": delay_ms},
-                    "total_batches": total_batches
-                }
-
-            except Exception as e:
-                logger.error(f"❌ Throttle Dispatch Error: {e}")
-                return {"success": False, "error": f"Throttle Dispatch Failed: {str(e)}"}
+        total_users = sum(len(v) for v in resolved.values())
+        if total_users == 0:
+            return {"success": False, "error": "No emails resolved from UIDs"}
 
         # ==================================================================
-        # MODE 3: SCHEDULED - Store in Redis, fire via APScheduler at exact time
+        # TURBO: all emails for all projects fired simultaneously
         # ==================================================================
-        elif sending_mode == 'scheduled':
-            schedule_config = request_data.get('schedule_config', {})
-            scheduled_datetime_str = schedule_config.get('scheduled_datetime')
-            execution_mode = schedule_config.get('execution_mode', 'turbo')
+        if sending_mode == "turbo":
+            logger.info(f"🚀 [TURBO] {total_users} emails → all concurrent")
+            sem = asyncio.Semaphore(300)
+            stats = {p: [0, 0] for p in resolved}  # [ok, fail]
 
+            async def _do_turbo(proj_id, uid, email, api_key, session):
+                sig = _ctrl()
+                if sig == "stop":
+                    return
+                while sig == "pause":
+                    await asyncio.sleep(0.5)
+                    sig = _ctrl()
+                if sig == "stop":
+                    return
+                async with sem:
+                    ok = await _send_one(session, api_key, email, proj_id)
+                s = stats[proj_id]
+                if ok:
+                    s[0] += 1
+                else:
+                    s[1] += 1
+                if (s[0]+s[1]) % 25 == 0:
+                    _flush(proj_id, s[0], s[1])
+                    stats[proj_id] = [0, 0]
+
+            connector = aiohttp.TCPConnector(limit=300, limit_per_host=100)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                coros = []
+                for p_id, pairs in resolved.items():
+                    api_key = proj_meta[p_id]["api_key"]
+                    for uid, email in pairs:
+                        coros.append(_do_turbo(p_id, uid, email, api_key, session))
+                await asyncio.gather(*coros, return_exceptions=True)
+
+            for p_id in stats:
+                _flush(p_id, stats[p_id][0], stats[p_id][1])
+
+            grand_ok   = sum(int(_r.hget(f"campaign:{campaign_id}:{p}:stats", "successful") or 0) for p in resolved)
+            grand_fail = sum(int(_r.hget(f"campaign:{campaign_id}:{p}:stats", "failed")     or 0) for p in resolved)
+
+            if campaign_id in active_campaigns:
+                active_campaigns[campaign_id].update({
+                    "status": "completed", "processed": total_users,
+                    "successful": grand_ok, "failed": grand_fail,
+                    "completedAt": datetime.now().isoformat()
+                })
+                save_campaigns_to_file()
+
+            return {
+                "success": True, "mode": "turbo", "campaignId": campaign_id,
+                "total": total_users, "successful": grand_ok, "failed": grand_fail,
+                "message": f"Turbo done: {grand_ok} sent, {grand_fail} failed out of {total_users}"
+            }
+
+        # ==================================================================
+        # THROTTLED: each project runs concurrently, ms delay between emails
+        # ==================================================================
+        elif sending_mode == "throttled":
+            delay_s = delay_ms / 1000.0 if delay_ms > 0 else 0.01
+            logger.info(f"⚙️ [THROTTLE] {1.0/delay_s:.1f} emails/sec (delay={delay_ms}ms) | {len(resolved)} project(s) in parallel")
+
+            async def _throttle_project(proj_id, pairs, api_key, session):
+                ok = fail = 0
+                for uid, email in pairs:
+                    sig = _ctrl()
+                    if sig == "stop":
+                        break
+                    while sig == "pause":
+                        await asyncio.sleep(0.5)
+                        sig = _ctrl()
+                    if sig == "stop":
+                        break
+                    sent = await _send_one(session, api_key, email, proj_id)
+                    if sent:
+                        ok += 1
+                    else:
+                        fail += 1
+                    if (ok + fail) % 10 == 0:
+                        _flush(proj_id, ok, fail)
+                        ok = fail = 0
+                    await asyncio.sleep(delay_s)
+                if ok or fail:
+                    _flush(proj_id, ok, fail)
+
+            connector = aiohttp.TCPConnector(limit=50)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                await asyncio.gather(*[
+                    _throttle_project(p_id, pairs, proj_meta[p_id]["api_key"], session)
+                    for p_id, pairs in resolved.items()
+                ], return_exceptions=True)
+
+            if campaign_id in active_campaigns:
+                active_campaigns[campaign_id]["status"] = "completed"
+                active_campaigns[campaign_id]["completedAt"] = datetime.now().isoformat()
+                save_campaigns_to_file()
+
+            return {
+                "success": True, "mode": "throttled", "campaignId": campaign_id,
+                "rate": f"{1.0/delay_s:.1f} emails/sec", "total": total_users,
+                "message": f"Throttled send complete at {1.0/delay_s:.1f}/sec"
+            }
+
+        # ==================================================================
+        # SCHEDULED — store in Redis, fire via APScheduler
+        # ==================================================================
+        elif sending_mode == "scheduled":
+            schedule_config = request_data.get("schedule_config", {})
+            scheduled_datetime_str = schedule_config.get("scheduled_datetime")
+            execution_mode = schedule_config.get("execution_mode", "turbo")
             if not scheduled_datetime_str:
                 return {"success": False, "error": "No scheduled_datetime provided"}
-
             try:
-                scheduled_datetime = datetime.fromisoformat(scheduled_datetime_str.replace('Z', '+00:00'))
+                scheduled_dt = datetime.fromisoformat(scheduled_datetime_str.replace("Z", "+00:00"))
             except Exception as e:
-                return {"success": False, "error": f"Invalid datetime format: {str(e)}"}
-
-            if scheduled_datetime <= datetime.now(timezone.utc):
+                return {"success": False, "error": f"Invalid datetime: {e}"}
+            if scheduled_dt <= datetime.now(timezone.utc):
                 return {"success": False, "error": "Scheduled time must be in the future"}
 
-            logger.info(f"📅 [SCHEDULED] Campaign {campaign_id} → {scheduled_datetime} in {execution_mode.upper()} mode")
-
-            # Store full campaign data in Redis so the Celery task can read it
-            import redis as redis_lib
-            r = redis_lib.Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'))
-
-            sched_key = f"scheduled_campaign:{campaign_id}"
-            sched_payload = json.dumps({
-                'campaign_id': campaign_id,
-                'projects': projects,
-                'execution_mode': execution_mode,
-                'throttle_config': request_data.get('throttle_config') or {},
-                'batch_size': request_data.get('batchSize', 100),
-                'scheduled_datetime': scheduled_datetime_str,
-                'created_at': datetime.now().isoformat()
-            })
-            # Keep in Redis until 1 hour after scheduled time
-            ttl_sec = int((scheduled_datetime - datetime.now(timezone.utc)).total_seconds()) + 3600
-            r.set(sched_key, sched_payload, ex=max(ttl_sec, 60))
-
-            # Add to APScheduler (fire Celery task at exact dt)
+            _r.set(
+                f"scheduled_campaign:{campaign_id}",
+                json.dumps({
+                    "campaign_id": campaign_id, "projects": projects_raw,
+                    "execution_mode": execution_mode, "throttle_config": throttle_config,
+                    "batch_size": request_data.get("batchSize", 100),
+                    "scheduled_datetime": scheduled_datetime_str,
+                    "created_at": datetime.now().isoformat()
+                }),
+                ex=int((scheduled_dt - datetime.now(timezone.utc)).total_seconds()) + 3600
+            )
             if SCHEDULER_AVAILABLE:
                 scheduler = get_scheduler()
                 try:
                     from src.utils.celery_tasks import execute_scheduled_campaign
                 except ImportError:
                     from celery_tasks import execute_scheduled_campaign
-
                 scheduler.add_job(
                     execute_scheduled_campaign.delay,
-                    DateTrigger(run_date=scheduled_datetime),
-                    args=[campaign_id],
-                    id=f"campaign_{campaign_id}",
-                    replace_existing=True
+                    DateTrigger(run_date=scheduled_dt),
+                    args=[campaign_id], id=f"campaign_{campaign_id}", replace_existing=True
                 )
-                logger.info(f"✅ Campaign {campaign_id} scheduled via APScheduler for {scheduled_datetime}")
-            else:
-                logger.warning("APScheduler not available – campaign stored in Redis but won't auto-fire")
-
-            # Update in-memory campaign
             if campaign_id in active_campaigns:
-                active_campaigns[campaign_id]['status'] = 'scheduled'
-                active_campaigns[campaign_id]['scheduledAt'] = scheduled_datetime_str
+                active_campaigns[campaign_id]["status"] = "scheduled"
+                active_campaigns[campaign_id]["scheduledAt"] = scheduled_datetime_str
                 save_campaigns_to_file()
-
             return {
-                "success": True,
-                "mode": "scheduled",
-                "campaign_id": campaign_id,
+                "success": True, "mode": "scheduled", "campaign_id": campaign_id,
                 "scheduled_datetime": scheduled_datetime_str,
-                "execution_mode": execution_mode,
-                "message": f"Campaign scheduled for {scheduled_datetime} in {execution_mode.upper()} mode"
+                "message": f"Scheduled for {scheduled_dt}"
             }
 
         else:
             return {"success": False, "error": f"Invalid sending_mode: {sending_mode}"}
-        
+
     except Exception as e:
-        logger.error(f"Campaign send failed: {str(e)}")
-        return {"success": False, "error": str(e), "summary": {"successful": 0, "failed": 0, "total": 0}}
-
-
-# ============================================================================
-# CAMPAIGN CONTROL ENDPOINTS (Pause / Resume / Stop)
-# ============================================================================
-_campaign_ctrl_redis = None
-
-def _get_ctrl_redis():
-    global _campaign_ctrl_redis
-    if _campaign_ctrl_redis is None:
-        redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-        _campaign_ctrl_redis = redis.Redis.from_url(redis_url, decode_responses=True)
-    return _campaign_ctrl_redis
+        logger.error(f"send_campaign failed: {e}")
+        return {"success": False, "error": str(e)}
 
 
 @app.post("/campaigns/{campaign_id}/pause")
 async def pause_campaign(campaign_id: str, request: Request):
     """Pause a running campaign — Celery workers will stop and wait."""
     try:
+        campaign = _get_campaign(campaign_id)
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
         r = _get_ctrl_redis()
         r.set(f"campaign:{campaign_id}:control", "pause", ex=86400)
-        # Update in-memory status
-        if campaign_id in active_campaigns:
-            active_campaigns[campaign_id]['status'] = 'paused'
+        campaign["status"] = "paused"
+        active_campaigns[campaign_id] = campaign
+        save_campaigns_to_file()
         logger.info(f"⏸️ Campaign {campaign_id} paused")
         return {"success": True, "status": "paused", "campaign_id": campaign_id}
     except Exception as e:
@@ -3498,10 +3507,14 @@ async def pause_campaign(campaign_id: str, request: Request):
 async def resume_campaign(campaign_id: str, request: Request):
     """Resume a paused campaign — Celery workers will continue sending."""
     try:
+        campaign = _get_campaign(campaign_id)
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
         r = _get_ctrl_redis()
         r.delete(f"campaign:{campaign_id}:control")
-        if campaign_id in active_campaigns:
-            active_campaigns[campaign_id]['status'] = 'running'
+        campaign["status"] = "running"
+        active_campaigns[campaign_id] = campaign
+        save_campaigns_to_file()
         logger.info(f"▶️ Campaign {campaign_id} resumed")
         return {"success": True, "status": "running", "campaign_id": campaign_id}
     except Exception as e:
@@ -3513,13 +3526,14 @@ async def resume_campaign(campaign_id: str, request: Request):
 async def stop_campaign(campaign_id: str, request: Request):
     """Stop a campaign permanently — Celery workers will abort immediately."""
     try:
+        campaign = _get_campaign(campaign_id)
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
         r = _get_ctrl_redis()
         r.set(f"campaign:{campaign_id}:control", "stop", ex=86400)
-        if campaign_id in active_campaigns:
-            active_campaigns[campaign_id]['status'] = 'stopped'
-        # Also update in campaigns store
-        if campaign_id in campaigns:
-            campaigns[campaign_id]['status'] = 'stopped'
+        campaign["status"] = "stopped"
+        active_campaigns[campaign_id] = campaign
+        save_campaigns_to_file()
         logger.info(f"⏹️ Campaign {campaign_id} stopped")
         return {"success": True, "status": "stopped", "campaign_id": campaign_id}
     except Exception as e:
