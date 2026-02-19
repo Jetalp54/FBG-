@@ -613,17 +613,28 @@ export const EnhancedCampaignsPage = () => {
 
                       {sendingMode.mode === 'throttled' && (
                         <div className="space-y-2">
-                          <label className="text-sm font-medium text-gray-300">Emails per Second</label>
+                          <label className="text-sm font-medium text-gray-300">Delay Between Emails (ms)</label>
                           <Input
                             type="number"
                             min="1"
-                            value={sendingMode.throttle_config?.emails_per_ms ? Math.round(sendingMode.throttle_config.emails_per_ms * 1000) : 10}
-                            onChange={(e) => setSendingMode(prev => ({
-                              ...prev,
-                              throttle_config: { ...prev.throttle_config, emails_per_ms: parseInt(e.target.value) / 1000 }
-                            }))}
+                            max="60000"
+                            value={sendingMode.throttle_config?.delay_ms ?? 10}
+                            onChange={(e) => {
+                              const dMs = Math.max(1, parseInt(e.target.value) || 10);
+                              setSendingMode(prev => ({
+                                ...prev,
+                                throttle_config: {
+                                  ...prev.throttle_config,
+                                  delay_ms: dMs,
+                                  emails_per_ms: 1 / dMs,
+                                }
+                              }));
+                            }}
                             className="bg-gray-700 border-gray-600 text-white"
                           />
+                          <p className="text-xs text-gray-500">
+                            = {sendingMode.throttle_config?.delay_ms ? (1000 / sendingMode.throttle_config.delay_ms).toFixed(1) : '100.0'} emails/sec
+                          </p>
                         </div>
                       )}
                     </div>
@@ -822,7 +833,42 @@ export const EnhancedCampaignsPage = () => {
             {/* User Selection */}
             {selectedProjects.length > 0 && (
               <div>
-                <Label className="text-gray-300">Select Users ({getTotalSelectedUsers()} selected)</Label>
+                <div className="flex items-center justify-between mb-2">
+                  <Label className="text-gray-300">Select Users ({getTotalSelectedUsers()} selected)</Label>
+                  {/* ── Select All Users across ALL selected projects ── */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const allSelected = selectedProjects.every(pid => {
+                        const pu = users[pid] || [];
+                        return pu.length > 0 && (selectedUsers[pid]?.length || 0) === pu.length;
+                      });
+                      if (allSelected) {
+                        // Deselect all
+                        setSelectedUsers({});
+                      } else {
+                        // Select all users in all selected projects
+                        const next: Record<string, string[]> = {};
+                        selectedProjects.forEach(pid => {
+                          const pu = users[pid] || [];
+                          next[pid] = pu.map((u: any) => u.uid);
+                        });
+                        setSelectedUsers(next);
+                      }
+                    }}
+                    className="px-4 py-1.5 rounded-lg text-sm font-semibold bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white transition-all shadow flex items-center gap-2"
+                  >
+                    <span>⚡</span>
+                    {
+                      selectedProjects.every(pid => {
+                        const pu = users[pid] || [];
+                        return pu.length > 0 && (selectedUsers[pid]?.length || 0) === pu.length;
+                      })
+                        ? 'Deselect All Users'
+                        : `Select ALL Users (All ${selectedProjects.length} Projects)`
+                    }
+                  </button>
+                </div>
                 <div className="space-y-4 mt-2 max-h-60 overflow-y-auto border border-gray-600 rounded-lg p-3">
                   {/* Select All Users Logic - Default to All */}
                   {selectedProjects.map((projectId) => {
