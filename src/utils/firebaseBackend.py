@@ -3465,6 +3465,66 @@ async def send_campaign(request: Request):
         return {"success": False, "error": str(e), "summary": {"successful": 0, "failed": 0, "total": 0}}
 
 
+# ============================================================================
+# CAMPAIGN CONTROL ENDPOINTS (Pause / Resume / Stop)
+# ============================================================================
+_campaign_ctrl_redis = None
+
+def _get_ctrl_redis():
+    global _campaign_ctrl_redis
+    if _campaign_ctrl_redis is None:
+        redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+        _campaign_ctrl_redis = redis.Redis.from_url(redis_url, decode_responses=True)
+    return _campaign_ctrl_redis
+
+
+@app.post("/campaigns/{campaign_id}/pause")
+async def pause_campaign(campaign_id: str, request: Request):
+    """Pause a running campaign — Celery workers will stop and wait."""
+    try:
+        r = _get_ctrl_redis()
+        r.set(f"campaign:{campaign_id}:control", "pause", ex=86400)
+        # Update in-memory status
+        if campaign_id in active_campaigns:
+            active_campaigns[campaign_id]['status'] = 'paused'
+        logger.info(f"⏸️ Campaign {campaign_id} paused")
+        return {"success": True, "status": "paused", "campaign_id": campaign_id}
+    except Exception as e:
+        logger.error(f"Pause campaign {campaign_id} failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/campaigns/{campaign_id}/resume")
+async def resume_campaign(campaign_id: str, request: Request):
+    """Resume a paused campaign — Celery workers will continue sending."""
+    try:
+        r = _get_ctrl_redis()
+        r.delete(f"campaign:{campaign_id}:control")
+        if campaign_id in active_campaigns:
+            active_campaigns[campaign_id]['status'] = 'running'
+        logger.info(f"▶️ Campaign {campaign_id} resumed")
+        return {"success": True, "status": "running", "campaign_id": campaign_id}
+    except Exception as e:
+        logger.error(f"Resume campaign {campaign_id} failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/campaigns/{campaign_id}/stop")
+async def stop_campaign(campaign_id: str, request: Request):
+    """Stop a campaign permanently — Celery workers will abort immediately."""
+    try:
+        r = _get_ctrl_redis()
+        r.set(f"campaign:{campaign_id}:control", "stop", ex=86400)
+        if campaign_id in active_campaigns:
+            active_campaigns[campaign_id]['status'] = 'stopped'
+        # Also update in campaigns store
+        if campaign_id in campaigns:
+            campaigns[campaign_id]['status'] = 'stopped'
+        logger.info(f"⏹️ Campaign {campaign_id} stopped")
+        return {"success": True, "status": "stopped", "campaign_id": campaign_id}
+    except Exception as e:
+        logger.error(f"Stop campaign {campaign_id} failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/test-reset-email")

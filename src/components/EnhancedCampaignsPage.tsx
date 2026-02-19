@@ -309,19 +309,44 @@ export const EnhancedCampaignsPage = () => {
 
   const handleSendCampaign = async (campaign: any) => {
     try {
-      console.log('EnhancedCampaignsPage: Starting campaign via context:', campaign.id);
-
-      // Use the context function which handles state updates and polling
       await startCampaign(campaign.id);
-
-      // Note: startCampaign in context handles the toast and polling setup
     } catch (error: any) {
-      console.error('EnhancedCampaignsPage: Error starting campaign:', error);
-      toast({
-        title: 'Error Starting Campaign',
-        description: error.message || 'Failed to start campaign.',
-        variant: 'destructive',
-      });
+      toast({ title: 'Error Starting Campaign', description: error.message || 'Failed to start campaign.', variant: 'destructive' });
+    }
+  };
+
+  const handlePauseCampaign = async (campaignId: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/campaigns/${campaignId}/pause`, { method: 'POST' });
+      if (!res.ok) throw new Error(await res.text());
+      toast({ title: '⏸️ Campaign Paused', description: 'Workers will stop at next checkpoint.' });
+      await loadCampaigns();
+    } catch (e: any) {
+      toast({ title: 'Error', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const handleResumeCampaign = async (campaignId: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/campaigns/${campaignId}/resume`, { method: 'POST' });
+      if (!res.ok) throw new Error(await res.text());
+      toast({ title: '▶️ Campaign Resumed', description: 'Workers are sending again.' });
+      await loadCampaigns();
+      startPollingCampaigns();
+    } catch (e: any) {
+      toast({ title: 'Error', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const handleStopCampaign = async (campaignId: string) => {
+    if (!confirm('Stop this campaign permanently? This cannot be undone.')) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/campaigns/${campaignId}/stop`, { method: 'POST' });
+      if (!res.ok) throw new Error(await res.text());
+      toast({ title: '⏹️ Campaign Stopped', description: 'All workers will abort immediately.' });
+      await loadCampaigns();
+    } catch (e: any) {
+      toast({ title: 'Error', description: e.message, variant: 'destructive' });
     }
   };
 
@@ -521,14 +546,19 @@ export const EnhancedCampaignsPage = () => {
                           </p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {/* Status Badge */}
                         <Badge className={`${campaign.status === 'completed' ? 'bg-green-500/20 text-green-400' :
-                          campaign.status === 'running' ? 'bg-blue-500/20 text-blue-400' :
-                            campaign.status === 'failed' ? 'bg-red-500/20 text-red-400' :
-                              'bg-gray-500/20 text-gray-400'
+                            campaign.status === 'running' ? 'bg-blue-500/20 text-blue-400 animate-pulse' :
+                              campaign.status === 'paused' ? 'bg-yellow-500/20 text-yellow-400' :
+                                campaign.status === 'stopped' ? 'bg-red-500/20 text-red-400' :
+                                  campaign.status === 'failed' ? 'bg-red-500/20 text-red-400' :
+                                    'bg-gray-500/20 text-gray-400'
                           }`}>
                           {campaign.status}
                         </Badge>
+
+                        {/* START — only when pending */}
                         {campaign.status === 'pending' && (
                           <Button
                             size="sm"
@@ -542,10 +572,44 @@ export const EnhancedCampaignsPage = () => {
                               campaign.sending_mode === 'scheduled' ? <Clock className="w-4 h-4 mr-1" /> :
                                 <Rocket className="w-4 h-4 mr-1" />}
                             {campaign.sending_mode === 'throttled' ? 'Start Throttled' :
-                              campaign.sending_mode === 'scheduled' ? 'Enable Schedule' :
-                                'Start Turbo'}
+                              campaign.sending_mode === 'scheduled' ? 'Enable Schedule' : 'Start Turbo'}
                           </Button>
                         )}
+
+                        {/* PAUSE — only when running */}
+                        {campaign.status === 'running' && (
+                          <Button
+                            size="sm"
+                            onClick={() => handlePauseCampaign(campaign.id)}
+                            className="bg-yellow-600 hover:bg-yellow-700 text-white"
+                          >
+                            <Pause className="w-4 h-4 mr-1" /> Pause
+                          </Button>
+                        )}
+
+                        {/* RESUME — only when paused */}
+                        {campaign.status === 'paused' && (
+                          <Button
+                            size="sm"
+                            onClick={() => handleResumeCampaign(campaign.id)}
+                            className="bg-green-600 hover:bg-green-700 text-white"
+                          >
+                            <Play className="w-4 h-4 mr-1" /> Resume
+                          </Button>
+                        )}
+
+                        {/* STOP — when running or paused */}
+                        {(campaign.status === 'running' || campaign.status === 'paused') && (
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => handleStopCampaign(campaign.id)}
+                          >
+                            <XCircle className="w-4 h-4 mr-1" /> Stop
+                          </Button>
+                        )}
+
+                        {/* DELETE — always */}
                         <Button
                           size="sm"
                           variant="destructive"
@@ -574,10 +638,12 @@ export const EnhancedCampaignsPage = () => {
                       />
                     </div>
 
-                    {/* Campaign Settings */}
-                    <div className="flex items-center gap-4 mt-3 text-sm text-gray-400">
-                      <span>Batch Size: {campaign.batchSize}</span>
-                      <span>Workers: {campaign.workers}</span>
+                    {/* Campaign Settings Footer */}
+                    <div className="flex items-center gap-4 mt-3 text-sm text-gray-500">
+                      <span>Mode: <span className="text-gray-300 font-medium">{campaign.sending_mode || 'turbo'}</span></span>
+                      {campaign.throttle_config?.delay_ms && (
+                        <span>Rate: <span className="text-blue-400 font-mono">{(1000 / campaign.throttle_config.delay_ms).toFixed(0)}/sec</span></span>
+                      )}
                       <span>Created: {new Date(campaign.createdAt).toLocaleDateString()}</span>
                     </div>
                   </div>

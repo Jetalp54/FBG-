@@ -1,18 +1,24 @@
 """
-Enterprise Campaign Sending Engine
-===================================
-All 3 modes are Celery-backed for true 1M-scale sending.
+Enterprise Campaign Sending Engine v4.0
+========================================
+TRUE enterprise-grade: ThreadPoolExecutor for Turbo, ETA-dispatch for Throttle,
+Redis-based pause/stop/resume controls.
 
-TURBO   → Max concurrency, no rate limit. All batches dispatched immediately.
-THROTTLE → Celery ETA-based scheduling (ms-precision). No batch fires before its ms-slot.
-SCHEDULED → Store in Redis, APScheduler fires at exact time, then runs as TURBO/THROTTLE.
+TURBO    → ThreadPoolExecutor(20 threads) per batch. All 100 emails fire in parallel.
+           No delays, no rate limiting, maximum Firebase throughput.
+THROTTLE → Every email dispatched as a micro-task with Celery ETA (countdown).
+           No blocking sleep inside any task. True ms-precision.
+CONTROL  → Before/during each send, check Redis key campaign:{id}:control.
+           Values: none=run, "pause"=wait, "stop"=abort immediately.
 """
 import os
 import json
 import time
 import logging
 import threading
-import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
+
 from .celery_app import celery_app
 import firebase_admin
 from firebase_admin import credentials, auth
@@ -25,160 +31,175 @@ from urllib.parse import urlparse
 # ------------------------------------------------------------------ #
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.info("✅ Celery Tasks Module Loaded (Version 3.0 - Enterprise Multi-Mode)")
+logger.info("✅ Celery Tasks Module Loaded (Version 4.0 - Thread-Parallel + Control Signals)")
 
 # ------------------------------------------------------------------ #
 # Redis                                                                #
 # ------------------------------------------------------------------ #
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-redis_client = redis.Redis.from_url(celery_app.conf.broker_url)
+redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 # ------------------------------------------------------------------ #
-# Rate Limiter Import                                                  #
-# ------------------------------------------------------------------ #
-from .rate_limiter import RedisRateLimiter
-
-# ------------------------------------------------------------------ #
-# Firebase App Cache (per-worker-process)                             #
+# Firebase App Cache (per-worker-process)                              #
 # ------------------------------------------------------------------ #
 firebase_apps = {}
 pyrebase_apps = {}
 projects_cache = {}
+cache_lock = threading.Lock()
 
 import uuid
-
-# Path to projects file
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PROJECTS_FILE = os.path.join(BASE_DIR, 'projects.json')
+
+# Turbo: max threads per Celery task (I/O bound → greedy is fine)
+TURBO_THREADS = int(os.getenv('TURBO_THREADS', '20'))
+# Batch size for UID→email resolution
+RESOLVE_CHUNK = 100
+
+
+# ------------------------------------------------------------------ #
+# Campaign Control (pause / stop)                                      #
+# ------------------------------------------------------------------ #
+def _ctrl_key(campaign_id):
+    return f"campaign:{campaign_id}:control"
+
+def _stats_key(campaign_id, project_id):
+    return f"campaign:{campaign_id}:{project_id}:stats"
+
+def _should_stop(campaign_id):
+    """Returns 'stop', 'pause', or None"""
+    return redis_client.get(_ctrl_key(campaign_id))
+
+def _wait_if_paused(campaign_id, poll_interval=0.5, max_wait=3600):
+    """Block until resumed or stopped. Returns True if should continue, False if stopped."""
+    waited = 0
+    while True:
+        signal = redis_client.get(_ctrl_key(campaign_id))
+        if signal == 'stop':
+            return False
+        if signal != 'pause':
+            return True
+        time.sleep(poll_interval)
+        waited += poll_interval
+        if waited >= max_wait:
+            logger.warning(f"[{campaign_id}] Paused >1hr, stopping")
+            return False
+
+def set_campaign_control(campaign_id, signal):
+    """Set control signal. signal: 'pause' | 'stop' | None (resume)"""
+    key = _ctrl_key(campaign_id)
+    if signal is None:
+        redis_client.delete(key)
+    else:
+        redis_client.set(key, signal, ex=86400)  # 24h TTL
+
+
+# ------------------------------------------------------------------ #
+# Redis Stats (pipeline)                                               #
+# ------------------------------------------------------------------ #
+def _record_results_bulk(campaign_id, project_id, n_success, n_fail):
+    """Bulk-update stats for N successes + M failures in one pipeline call."""
+    if n_success == 0 and n_fail == 0:
+        return
+    key = _stats_key(campaign_id, project_id)
+    pipe = redis_client.pipeline()
+    pipe.hincrby(key, "processed", n_success + n_fail)
+    if n_success:
+        pipe.hincrby(key, "successful", n_success)
+    if n_fail:
+        pipe.hincrby(key, "failed", n_fail)
+    pipe.expire(key, 86400)
+    pipe.execute()
+
+def _record_error(campaign_id, project_id, error_msg):
+    key = f"campaign:{campaign_id}:errors"
+    redis_client.lpush(key, json.dumps({'project': project_id, 'error': str(error_msg)[:200]}))
+    redis_client.ltrim(key, 0, 9999)
+    redis_client.expire(key, 86400)
 
 
 # ------------------------------------------------------------------ #
 # Project / Firebase Helpers                                           #
 # ------------------------------------------------------------------ #
 def get_project_credentials(project_id):
-    """Retrieve project credentials from cache or file"""
     global projects_cache
+    project_id = str(project_id)
+    with cache_lock:
+        if project_id in projects_cache:
+            return projects_cache[project_id]
 
-    if not projects_cache or project_id not in projects_cache:
-        try:
-            if os.path.exists(PROJECTS_FILE):
-                with open(PROJECTS_FILE, 'r') as f:
-                    projects = json.load(f)
-
-                projects_cache = {}
-                dirty = False
-
+    try:
+        if os.path.exists(PROJECTS_FILE):
+            with open(PROJECTS_FILE, 'r') as f:
+                projects = json.load(f)
+            with cache_lock:
                 for p in projects:
-                    if 'id' not in p:
-                        if 'service_account' in p and 'project_id' in p['service_account']:
-                            p['id'] = str(p['service_account']['project_id'])
-                            dirty = True
-                        elif 'project_id' in p:
-                            p['id'] = str(p['project_id'])
-                            dirty = True
-                        else:
-                            p['id'] = str(uuid.uuid4())
-                            dirty = True
-                            logger.warning(f"Generated temp ID for malformed project: {p.get('name', 'unknown')}")
-
+                    pid = (
+                        p.get('id') or
+                        (p.get('service_account') or {}).get('project_id') or
+                        p.get('project_id') or
+                        str(uuid.uuid4())
+                    )
+                    p.setdefault('id', str(pid))
                     projects_cache[str(p['id'])] = p
+    except Exception as e:
+        logger.error(f"Failed to load projects file: {e}")
 
-                if dirty:
-                    try:
-                        with open(PROJECTS_FILE, 'w') as f_out:
-                            json.dump(projects, f_out, indent=2)
-                        logger.info("✅ Auto-repaired projects.json with missing IDs")
-                    except Exception as e:
-                        logger.error(f"Failed to save repaired projects.json: {e}")
-            else:
-                logger.error(f"projects.json not found at {PROJECTS_FILE}")
-        except Exception as e:
-            logger.error(f"Failed to load projects file: {e}")
-            return None
-
-    return projects_cache.get(str(project_id))
+    return projects_cache.get(project_id)
 
 
 def initialize_firebase_for_project(project_id):
-    """Initialize Firebase Admin + Pyrebase for a project (cached per worker)"""
     project_id = str(project_id)
-    if project_id in firebase_apps:
-        return firebase_apps[project_id], pyrebase_apps.get(project_id)
+    with cache_lock:
+        if project_id in firebase_apps:
+            return firebase_apps[project_id], pyrebase_apps.get(project_id)
 
     project = get_project_credentials(project_id)
     if not project:
-        logger.error(f"Project {project_id} not found in configuration")
         return None, None
 
     try:
         service_account = project.get('serviceAccount') or project.get('service_account')
         api_key = project.get('apiKey') or project.get('api_key')
-
         if not service_account:
             logger.error(f"Missing service account for project {project_id}")
             return None, None
 
-        # Firebase Admin SDK
         cred = credentials.Certificate(service_account)
         app_name = f"worker_{project_id}_{os.getpid()}"
-
         try:
             app = firebase_admin.get_app(app_name)
         except ValueError:
             app = firebase_admin.initialize_app(cred, name=app_name)
 
-        firebase_apps[project_id] = app
-
-        # Pyrebase (Client SDK) for sending password reset emails
-        sa_project_id = service_account.get('project_id')
-        config = {
+        sa_pid = service_account.get('project_id')
+        pyrebase_config = {
             "apiKey": api_key,
-            "authDomain": f"{sa_project_id}.firebaseapp.com",
-            "databaseURL": f"https://{sa_project_id}.firebaseio.com",
-            "storageBucket": f"{sa_project_id}.appspot.com",
+            "authDomain": f"{sa_pid}.firebaseapp.com",
+            "databaseURL": f"https://{sa_pid}.firebaseio.com",
+            "storageBucket": f"{sa_pid}.appspot.com",
             "serviceAccount": service_account
         }
-        pyrebase_app = pyrebase.initialize_app(config)
-        pyrebase_apps[project_id] = pyrebase_app
+        pb_app = pyrebase.initialize_app(pyrebase_config)
+
+        with cache_lock:
+            firebase_apps[project_id] = app
+            pyrebase_apps[project_id] = pb_app
 
         logger.info(f"✅ Initialized Firebase for project {project_id}")
-        return app, pyrebase_app
+        return app, pb_app
 
     except Exception as e:
-        logger.error(f"Failed to initialize Firebase for project {project_id}: {e}")
+        logger.error(f"Failed to initialize Firebase for {project_id}: {e}")
         return None, None
 
 
 # ------------------------------------------------------------------ #
-# Redis Stats Helpers                                                  #
+# UID → Email Batch Resolution                                         #
 # ------------------------------------------------------------------ #
-def _record_result(campaign_id, project_id, success: bool, error_msg=None):
-    """Atomically update Redis stats for a campaign"""
-    stats_key = f"campaign:{campaign_id}:{project_id}:stats"
-    pipe = redis_client.pipeline()
-    pipe.hincrby(stats_key, "processed", 1)
-    if success:
-        pipe.hincrby(stats_key, "successful", 1)
-    else:
-        pipe.hincrby(stats_key, "failed", 1)
-    pipe.expire(stats_key, 86400)  # 24h TTL
-    pipe.execute()
-
-    if error_msg:
-        errors_key = f"campaign:{campaign_id}:errors"
-        redis_client.lpush(errors_key, json.dumps({'project': project_id, 'error': error_msg[:200]}))
-        redis_client.ltrim(errors_key, 0, 9999)
-
-
 def _batch_resolve_emails(project_id, admin_app, user_ids):
-    """
-    Resolve up to 100 UIDs → emails using Firebase batch API.
-    Falls back to individual lookups on error.
-    Returns dict {uid: email}
-    """
     uid_email = {}
-    # Firebase allows max 100 per batch
-    chunks = [user_ids[i:i+100] for i in range(0, len(user_ids), 100)]
+    chunks = [user_ids[i:i+RESOLVE_CHUNK] for i in range(0, len(user_ids), RESOLVE_CHUNK)]
     for chunk in chunks:
         try:
             identifiers = [auth.UidIdentifier(uid) for uid in chunk]
@@ -187,7 +208,7 @@ def _batch_resolve_emails(project_id, admin_app, user_ids):
                 if user.email:
                     uid_email[user.uid] = user.email
         except Exception as e:
-            logger.error(f"[{project_id}] Batch user lookup error: {e} – falling back to individual")
+            logger.error(f"[{project_id}] Batch lookup error: {e} – individual fallback")
             for uid in chunk:
                 try:
                     u = auth.get_user(uid, app=admin_app)
@@ -199,91 +220,179 @@ def _batch_resolve_emails(project_id, admin_app, user_ids):
 
 
 # ==================================================================
-# CELERY TASK: process_campaign_batch
-# Handles all modes: turbo (no delay), throttled (ms sleep between emails)
+# CELERY TASK: send_single_email
+# Used by Throttle mode — each email dispatched with its own ETA.
+# No blocking sleep anywhere, true ms-precision scheduling.
 # ==================================================================
-@celery_app.task(bind=True, max_retries=3, default_retry_delay=5)
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=3)
+def send_single_email(self, campaign_id, project_id, uid, email):
+    """
+    Send exactly one password-reset email.
+    Scheduled in the future by process_campaign_batch (throttle mode).
+    Checks for stop/pause signals before sending.
+    """
+    # Control check
+    signal = _should_stop(campaign_id)
+    if signal == 'stop':
+        logger.info(f"[{campaign_id}] Stopped before sending {email}")
+        return {'skipped': True}
+    if signal == 'pause':
+        if not _wait_if_paused(campaign_id):
+            return {'skipped': True}
+
+    admin_app, client_app = initialize_firebase_for_project(project_id)
+    if not client_app:
+        _record_results_bulk(campaign_id, project_id, 0, 1)
+        _record_error(campaign_id, project_id, f"Firebase init failed for {uid}")
+        return {'success': False}
+
+    auth_client = client_app.auth()
+    try:
+        auth_client.send_password_reset_email(email)
+        _record_results_bulk(campaign_id, project_id, 1, 0)
+        return {'success': True, 'email': email}
+    except Exception as e:
+        _record_results_bulk(campaign_id, project_id, 0, 1)
+        _record_error(campaign_id, project_id, str(e))
+        return {'success': False, 'error': str(e)[:200]}
+
+
+# ==================================================================
+# CELERY TASK: process_campaign_batch
+# TURBO: ThreadPoolExecutor — all emails in parallel, no delay.
+# THROTTLE: Dispatch each email as send_single_email with countdown.
+# ==================================================================
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=5)
 def process_campaign_batch(self, campaign_id, project_id, user_ids,
                            rate_limit=None,
                            mode='turbo',
                            emails_per_second=None,
                            delay_ms_between_emails=0):
     """
-    Enterprise batch email sender.
+    Enterprise batch dispatcher.
 
-    Args:
-        campaign_id     : Campaign UUID
-        project_id      : Firebase project ID
-        user_ids        : List of Firebase UIDs to process in this batch
-        rate_limit      : Global Redis rate limit (emails/sec) – legacy turbo param
-        mode            : 'turbo' | 'throttled'
-        emails_per_second: For throttled mode (overrides rate_limit)
-        delay_ms_between_emails: Fixed ms gap between sends in throttled mode
+    TURBO   : Thread-parallel sends. All emails fired concurrently via ThreadPoolExecutor.
+    THROTTLE: Each email scheduled as an individual Celery task at the correct ETA.
+              No time.sleep() anywhere. True ms-precision, non-blocking.
     """
+    # ── Check stop/pause before doing any work ────────────────────────────────
+    signal = _should_stop(campaign_id)
+    if signal == 'stop':
+        logger.info(f"[{campaign_id}] Batch skipped — stop signal")
+        return {'skipped': True}
+    if signal == 'pause':
+        if not _wait_if_paused(campaign_id):
+            return {'skipped': True}
+
+    # ── Initialize Firebase ───────────────────────────────────────────────────
     admin_app, client_app = initialize_firebase_for_project(project_id)
     if not client_app:
-        logger.error(f"[{project_id}] Firebase init failed – marking {len(user_ids)} users as failed")
-        for _ in user_ids:
-            _record_result(campaign_id, project_id, False, "Firebase init failed")
-        return {'success': 0, 'failed': len(user_ids), 'error': 'Firebase init failed'}
+        n = len(user_ids)
+        _record_results_bulk(campaign_id, project_id, 0, n)
+        return {'success': 0, 'failed': n, 'error': 'Firebase init failed'}
 
-    auth_client = client_app.auth()
-
-    # ---------------------------------------------------------------
-    # 1. Resolve UIDs → Emails (batch API, 100 at a time)
-    # ---------------------------------------------------------------
+    # ── Batch-resolve UIDs → emails ───────────────────────────────────────────
     uid_email_map = _batch_resolve_emails(project_id, admin_app, user_ids)
-    logger.info(f"[{project_id}] Resolved {len(uid_email_map)}/{len(user_ids)} emails")
+    logger.info(f"[{project_id}] Resolved {len(uid_email_map)}/{len(user_ids)} emails → mode={mode}")
 
-    # ---------------------------------------------------------------
-    # 2. Rate Limiter (for throttled mode via Redis)
-    # ---------------------------------------------------------------
-    limiter = None
-    effective_rate = emails_per_second or rate_limit
-    if mode == 'throttled' and effective_rate and float(effective_rate) > 0:
-        limit_key = f"campaign:{campaign_id}:global_limit"
-        limiter = RedisRateLimiter(
-            redis_client, limit_key,
-            rate_per_second=float(effective_rate),
-            burst_capacity=max(int(float(effective_rate) * 2), 10)
+    # Mark users with no email as failed immediately
+    no_email = [uid for uid in user_ids if uid not in uid_email_map]
+    if no_email:
+        _record_results_bulk(campaign_id, project_id, 0, len(no_email))
+
+    emails = [(uid, email) for uid, email in uid_email_map.items()]
+
+    # ==================================================================
+    # TURBO MODE — ThreadPoolExecutor, all in parallel
+    # ==================================================================
+    if mode == 'turbo':
+        auth_client = client_app.auth()
+
+        def _send_one(uid_email_tuple):
+            uid, email = uid_email_tuple
+            # Check control before each send
+            sig = redis_client.get(_ctrl_key(campaign_id))
+            if sig == 'stop':
+                return (False, 'stopped')
+            if sig == 'pause':
+                if not _wait_if_paused(campaign_id):
+                    return (False, 'stopped')
+            try:
+                auth_client.send_password_reset_email(email)
+                return (True, None)
+            except Exception as e:
+                return (False, str(e)[:200])
+
+        successful = 0
+        failed = 0
+
+        # Use ThreadPoolExecutor for true parallel I/O
+        with ThreadPoolExecutor(max_workers=TURBO_THREADS) as executor:
+            futures = {executor.submit(_send_one, pair): pair for pair in emails}
+            batch_ok = 0
+            batch_fail = 0
+
+            for future in as_completed(futures):
+                ok, err = future.result()
+                if ok:
+                    batch_ok += 1
+                else:
+                    batch_fail += 1
+                    if err and err not in ('stopped',):
+                        _record_error(campaign_id, project_id, err)
+
+                # Flush stats every 50 completions
+                if (batch_ok + batch_fail) % 50 == 0:
+                    _record_results_bulk(campaign_id, project_id, batch_ok, batch_fail)
+                    successful += batch_ok
+                    failed += batch_fail
+                    batch_ok = 0
+                    batch_fail = 0
+
+            # Flush remainder
+            if batch_ok or batch_fail:
+                _record_results_bulk(campaign_id, project_id, batch_ok, batch_fail)
+                successful += batch_ok
+                failed += batch_fail
+
+        logger.info(f"[{project_id}][TURBO] Batch done: {successful} sent, {failed} failed")
+        return {'project_id': project_id, 'successful': successful, 'failed': failed}
+
+    # ==================================================================
+    # THROTTLE MODE — ETA-based dispatch, zero blocking
+    # Each email is a separate Celery task scheduled in the future.
+    # ==================================================================
+    elif mode == 'throttled':
+        delay_ms = delay_ms_between_emails
+        if delay_ms <= 0 and emails_per_second and float(emails_per_second) > 0:
+            delay_ms = 1000.0 / float(emails_per_second)
+        if delay_ms <= 0:
+            delay_ms = 10  # fallback: 100/sec
+
+        delay_s = delay_ms / 1000.0  # convert to seconds for Celery countdown
+
+        now = datetime.utcnow()
+        queued = 0
+
+        for i, (uid, email) in enumerate(emails):
+            # ETA = now + i * delay_s
+            eta = now + timedelta(seconds=i * delay_s)
+            send_single_email.apply_async(
+                args=[campaign_id, project_id, uid, email],
+                eta=eta
+            )
+            queued += 1
+
+        logger.info(
+            f"[{project_id}][THROTTLE] Queued {queued} emails "
+            f"@ {1000/delay_ms:.1f}/sec (delay={delay_ms}ms). "
+            f"ETA for last: {(len(emails)-1)*delay_s:.1f}s from now."
         )
+        return {'project_id': project_id, 'queued': queued, 'delay_ms': delay_ms}
 
-    # ---------------------------------------------------------------
-    # 3. Send Emails
-    # ---------------------------------------------------------------
-    successful = 0
-    failed = 0
-
-    for uid in user_ids:
-        email = uid_email_map.get(uid)
-
-        if not email:
-            failed += 1
-            _record_result(campaign_id, project_id, False, f"Email not found for UID {uid}")
-            continue
-
-        # Throttle: wait for rate limiter token
-        if limiter:
-            allowed, wait_time = limiter.acquire()
-            if not allowed and wait_time > 0:
-                time.sleep(min(wait_time, 30))  # cap sleep at 30s
-
-        # Fixed ms-based delay (alternative to rate limiter)
-        if delay_ms_between_emails > 0 and not limiter:
-            time.sleep(delay_ms_between_emails / 1000.0)
-
-        try:
-            auth_client.send_password_reset_email(email)
-            successful += 1
-            _record_result(campaign_id, project_id, True)
-        except Exception as e:
-            err_str = str(e)
-            failed += 1
-            _record_result(campaign_id, project_id, False, err_str)
-            logger.debug(f"[{project_id}] Send failed for {email}: {err_str[:100]}")
-
-    logger.info(f"[{project_id}][{campaign_id}] Batch done: {successful} sent, {failed} failed")
-    return {'project_id': project_id, 'successful': successful, 'failed': failed}
+    else:
+        logger.error(f"Unknown mode '{mode}'")
+        return {'error': f"Unknown mode: {mode}"}
 
 
 # ==================================================================
@@ -292,12 +401,6 @@ def process_campaign_batch(self, campaign_id, project_id, user_ids,
 # ==================================================================
 @celery_app.task(bind=True, max_retries=0)
 def execute_scheduled_campaign(self, campaign_id):
-    """
-    Called by APScheduler at the exact scheduled time.
-    Reads campaign data from Redis and dispatches batches.
-    """
-    import json
-
     key = f"scheduled_campaign:{campaign_id}"
     raw = redis_client.get(key)
     if not raw:
@@ -308,17 +411,15 @@ def execute_scheduled_campaign(self, campaign_id):
     execution_mode = data.get('execution_mode', 'turbo')
     projects_list = data.get('projects', [])
     throttle_config = data.get('throttle_config') or {}
-    batch_size = data.get('batch_size', 100)
+    batch_size = int(data.get('batch_size', 100))
 
-    emails_per_second = None
     delay_ms = 0
+    emails_per_second = None
 
     if execution_mode == 'throttled':
-        # Convert ms-based config to per-second for the rate limiter
-        emails_per_ms = throttle_config.get('emails_per_ms') or throttle_config.get('emailsPerMs', 0)
-        delay_ms = throttle_config.get('delay_ms') or throttle_config.get('delayMs', 0)
-        if emails_per_ms:
-            emails_per_second = float(emails_per_ms) * 1000.0  # ms → per-second
+        delay_ms = float(throttle_config.get('delay_ms') or throttle_config.get('delayMs', 10))
+        if delay_ms > 0:
+            emails_per_second = 1000.0 / delay_ms
 
     logger.info(f"[SCHEDULED] Executing campaign {campaign_id} in {execution_mode.upper()} mode")
 
@@ -340,50 +441,30 @@ def execute_scheduled_campaign(self, campaign_id):
             total_queued += len(batch)
 
     logger.info(f"[SCHEDULED] Campaign {campaign_id}: queued {total_queued} sends")
-    redis_client.delete(key)  # Clean up scheduled data after dispatch
+    redis_client.delete(key)
 
 
 # ------------------------------------------------------------------ #
 # Database Helper (optional – no-op if DB not configured)            #
 # ------------------------------------------------------------------ #
-import psycopg2
+try:
+    import psycopg2
+    _psycopg2_available = True
+except ImportError:
+    _psycopg2_available = False
 
 def get_db_connection():
+    if not _psycopg2_available:
+        return None
     try:
         db_url = os.getenv('DB_URL')
         if not db_url:
             return None
         result = urlparse(db_url)
         return psycopg2.connect(
-            database=result.path[1:],
-            user=result.username,
-            password=result.password,
-            host=result.hostname,
-            port=result.port
+            database=result.path[1:], user=result.username,
+            password=result.password, host=result.hostname, port=result.port
         )
     except Exception as e:
         logger.error(f"DB Connect Error: {e}")
         return None
-
-
-def save_batch_logs(logs):
-    if not logs:
-        return
-    conn = get_db_connection()
-    if not conn:
-        return
-    try:
-        cursor = conn.cursor()
-        args_str = ','.join(cursor.mogrify("(%s,%s,%s,%s,%s,%s)", (
-            x['campaign_id'], x['project_id'], x['user_id'],
-            x['email'], x['status'], x['error']
-        )).decode('utf-8') for x in logs)
-        cursor.execute(
-            "INSERT INTO campaign_logs (campaign_id, project_id, user_id, email, status, error_message) VALUES " + args_str
-        )
-        conn.commit()
-    except Exception as e:
-        logger.error(f"Batch Insert Error: {e}")
-    finally:
-        if conn:
-            conn.close()
