@@ -398,6 +398,10 @@ PROFILES_FILE = os.path.join(BASE_DIR, 'profiles.json')
 ROLE_PERMISSIONS_FILE = os.path.join(BASE_DIR, 'role_permissions.json')
 SMTP_SETTINGS_FILE = os.path.join(BASE_DIR, 'smtp_settings.json')
 PASSWORD_RESET_TOKENS_FILE = os.path.join(BASE_DIR, 'password_reset_tokens.json')
+
+# Log critical persistence paths on startup
+logger.info(f"📂 BASE_DIR: {BASE_DIR}")
+logger.info(f"💾 CAMPAIGNS_FILE: {CAMPAIGNS_FILE}")
 APP_USERS_FILE = os.path.join(BASE_DIR, 'app_users.json')
 DATA_LISTS_FILE = os.path.join(BASE_DIR, 'data_lists.json')
 PROJECTS_JSON_PATH = PROJECTS_FILE # Alias just in case
@@ -1082,6 +1086,7 @@ def save_campaigns_to_file():
         with open(temp_file, 'w') as f:
             json.dump(list(active_campaigns.values()), f, indent=2)
         os.replace(temp_file, CAMPAIGNS_FILE)
+        logger.info(f"✅ Saved campaigns to {CAMPAIGNS_FILE}")
     except Exception as e:
         logger.error(f"Error saving campaigns: {str(e)}")
 
