@@ -3595,8 +3595,12 @@ async def send_campaign(request: Request):
         else:
             return {"success": False, "error": f"Invalid sending_mode: {sending_mode}"}
 
+    except Exception as e:
+        logger.error(f"send_campaign failed: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
 
 
+# ============================================================================
 # CAMPAIGN CONTROL — Redis client for pause/stop/resume signals
 # ============================================================================
 _campaign_ctrl_redis = None
