@@ -113,6 +113,15 @@ export const TemplatesPage = () => {
       return;
     }
 
+    if (resetBody && !resetBody.includes('{{reset_link}}')) {
+      toast({
+        title: 'Invalid Template',
+        description: 'HTML Body must include the {{reset_link}} placeholder.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
     setResetLoading(true);
 
     // Build payload with only non-empty fields
@@ -136,7 +145,10 @@ export const TemplatesPage = () => {
       // Use bulk endpoint for better performance
       const response = await fetch(`${API_BASE_URL}/update-reset-template-bulk`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-App-Username': localStorage.getItem('app-username') || 'admin'
+        },
         body: JSON.stringify(payload)
       });
 
@@ -160,23 +172,18 @@ export const TemplatesPage = () => {
         setResetAuthDomain('');
         setSelectedProjects([]);
       } else {
+        // Handle failure
+        const errorMsg = data.error || (data.results && data.results.find((r: any) => !r.success)?.error) || 'All updates failed';
+        
         // Handle partial success
         if (data.summary && data.summary.successful > 0) {
           toast({
             title: 'Partial Success',
-            description: `Updated ${data.summary.successful} project(s) successfully. ${data.summary.failed} failed.`
+            description: `Updated ${data.summary.successful} project(s) successfully. ${data.summary.failed} failed. Error: ${errorMsg}`,
+            variant: 'destructive'
           });
-
-          // Clear form on partial success too
-          setResetSenderName('');
-          setResetFromAddress('');
-          setResetReplyTo('');
-          setResetSubject('');
-          setResetBody('');
-          setResetAuthDomain('');
-          setSelectedProjects([]);
         } else {
-          throw new Error('All updates failed');
+          throw new Error(errorMsg);
         }
       }
 
@@ -188,10 +195,10 @@ export const TemplatesPage = () => {
         }
       }
 
-    } catch (error) {
+    } catch (error: any) {
       toast({
-        title: 'Error',
-        description: 'Failed to update templates. Please try again.',
+        title: 'Update Failed',
+        description: error.message || 'Failed to update templates. Please try again.',
         variant: 'destructive'
       });
       console.error('Template update error:', error);

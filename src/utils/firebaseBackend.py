@@ -4198,7 +4198,10 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                 return {"project_id": project_id, "success": False, "error": "Service account missing"}
             credentials = service_account.Credentials.from_service_account_info(
                 service_account_info,
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                scopes=[
+                    "https://www.googleapis.com/auth/cloud-platform",
+                    "https://www.googleapis.com/auth/firebase"
+                ]
             )
             authed_session = AuthorizedSession(credentials)
             
@@ -4217,7 +4220,7 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                         logger.info(f"Merged existing template fields for project {project_id}")
                 
                 # 2. Patch with merged template
-                url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=notification.sendEmail.resetPasswordTemplate"
+                url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config"
                 payload = {
                     "notification": {
                         "sendEmail": {
@@ -4226,12 +4229,22 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                     }
                 }
                 logger.info(f"Sending merged template update to Firebase API for project {project_id}")
-                response = authed_session.patch(url, json=payload)
+                response = authed_session.patch(
+                    url, 
+                    json=payload,
+                    params={"updateMask": "notification.sendEmail.resetPasswordTemplate"}
+                )
+                
                 if not response.ok:
                     error_text = response.text
+                    try:
+                        error_json = response.json()
+                        error_text = error_json.get('error', {}).get('message', error_text)
+                    except:
+                        pass
                     logger.error(f"Firebase API error for project {project_id}: {response.status_code} - {error_text}")
-                    return {"project_id": project_id, "success": False, "error": f"Firebase API error: {response.status_code} - {error_text}"}
-                response.raise_for_status()
+                    return {"project_id": project_id, "success": False, "error": f"Firebase API error: {error_text}"}
+                
                 logger.info(f"Reset template updated for project {project_id} by {user or 'unknown'}")
             
             # Update domain configuration if provided (using our non-destructive helper)
