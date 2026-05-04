@@ -4177,7 +4177,12 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
         if body is not None:
             if not isinstance(body, str) or len(body) > 1000000:  # Increased to 1MB for large HTML templates
                 raise HTTPException(status_code=400, detail="Invalid body - too long (max 1MB)")
-            template["body"] = body
+            template["body"] = body.replace('{{reset_link}}', '%LINK%')
+            template["bodyFormat"] = "HTML"
+        
+        if template:
+            template["customized"] = True
+            
         return template
 
     results = []

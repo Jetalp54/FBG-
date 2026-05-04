@@ -113,10 +113,10 @@ export const TemplatesPage = () => {
       return;
     }
 
-    if (resetBody && !resetBody.includes('{{reset_link}}')) {
+    if (resetBody && !resetBody.includes('%LINK%')) {
       toast({
         title: 'Invalid Template',
-        description: 'HTML Body must include the {{reset_link}} placeholder.',
+        description: 'HTML Body must include the %LINK% placeholder.',
         variant: 'destructive'
       });
       return;
@@ -584,7 +584,7 @@ export const TemplatesPage = () => {
                   <Textarea
                     value={resetBody}
                     onChange={e => setResetBody(e.target.value)}
-                    placeholder="<h1>Reset Your Password</h1><p>Click the link below to reset your password:</p><a href='{{reset_link}}'>Reset Password</a>"
+                    placeholder="<h1>Reset Your Password</h1><p>Click the link below to reset your password:</p><a href='%LINK%'>Reset Password</a>"
                     className="min-h-[200px] bg-gray-700 border-gray-600 text-white font-mono text-sm"
                   />
                 </div>
